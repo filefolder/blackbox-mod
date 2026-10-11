@@ -30,7 +30,8 @@ out (new FX, fixes). That's all the list is for.
 - **Wrap-around note moves**: in the piano roll, moving notes in time with the timing knob carries them past the
   pattern's end back to its start (and the other way), selection and all, instead of stopping at the edges.
 - **Piano roll knobs**: nothing is selected until you draw a box around notes. Bottom-left moves the boxed notes (or
-  every note) in time, bottom-right in pitch, top-right sets their length. Top-left steps through single notes;
+  every note) in time, wrapping around, bottom-right in pitch (the set stops together at the edge), top-right
+  changes their length. Top-left steps through single notes;
   past the last one it goes back to nothing selected.
 - **Replace recording**: Step Mode becomes OFF / ON / REPLACE / ON+REPL. REPLACE records in free time (like OFF),
   ON+REPL snaps to steps (like ON). In both, while recording, a note you play deletes the older notes starting in

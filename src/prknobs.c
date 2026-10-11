@@ -14,9 +14,10 @@
  *    last note goes back to nothing selected. Otherwise stock.
  *  - Bottom-left (time), top-right (length), bottom-right (pitch): with a box selection they act on the boxed notes;
  *    with nothing selected and no box, on every note; with a current note picked by the top-left knob, on it (stock).
- *    Acting on a set works by making one note of the set current, loading the knob from it and letting the stock
- *    handler and the stock selection copy do the rest, with the whole set briefly standing in as the box selection.
- *    Time wraps around the pattern (roll.c), pitch and length are clamped per note by the stock clamp.
+ *    Acting on a set posts the same per-note edit the stock knob handlers post for the current note (message 0x16f
+ *    to the app, plus the view's own 0x42 / 0x43 redraw), one per note, by whole steps of the knob.
+ *    Time wraps around the pattern; pitch moves the set together and stops it at the knob's range (chord shapes
+ *    are kept); length is clamped per note.
  *  - The bottom-right knob works in every sequence mode (the +0xf5e0 skip is patched out).
  */
 #include <stdint.h>
@@ -69,9 +70,10 @@ struct prk_state {
     uint8_t *view;               /* the view the state belongs to */
     int32_t acc;                 /* top-left counts toward a step into / out of "nothing selected" */
     uint8_t none;
+    int32_t knob[3];             /* bottom-left, top-right, bottom-right: counts toward the next step */
 };
 #define PS ((volatile struct prk_state *)0x38800e40u)   /* backup SRAM, after usbrecover's 0x38800e00 */
-#define MAGIC 0x50524b31u        /* "PRK1" */
+#define MAGIC 0x50524b32u        /* "PRK2" */
 
 static void ensure(uint8_t *v)
 {
@@ -80,6 +82,7 @@ static void ensure(uint8_t *v)
         PS->view = v;
         PS->acc = 0;
         PS->none = 1;
+        PS->knob[0] = PS->knob[1] = PS->knob[2] = 0;
         PS->magic = MAGIC;
     }
 }
@@ -90,15 +93,6 @@ static inline void wr32(uint8_t *p, int32_t x) { *(volatile int32_t *)p = x; }
 static uint8_t *note_cell(uint8_t *v, int i)
 {
     return V_CELL(v, rd32(v + V_NOTES + 4 * i));
-}
-
-static int index_of(uint8_t *v, uint32_t id)
-{
-    int n = rd32(v + V_NCOUNT);
-    for (int i = 0; i < n; i++)
-        if ((uint32_t)rd32(note_cell(v, i) + CELL_ID) == id)
-            return i;
-    return -1;
 }
 
 /* Highlight exactly the boxed notes. */
@@ -168,28 +162,118 @@ void prk_select(uint8_t *v, int delta)
     fw_select(v, delta);
 }
 
-/* Make note i current for knob k without the select handler's side effects, and load knob k from it. */
-static void load_anchor(uint8_t *v, int i, int k)
+struct edit_msg {
+    uint16_t id, _r0;
+    uint32_t tag;
+    uint16_t pad, _r1;
+    int32_t event, field, value;
+};
+typedef void (*post_fn)(uint8_t *obj, void *msg);
+#define fw_post   ((post_fn)FN(0x080aed14))   /* hand a message to obj's parent */
+#define MSG_TAG   0x080cfba4u
+#define V_PARENT  0x2c                          /* -> the piano roll's parent; its parent is the app */
+#define V_PADCODE 0xa04c
+
+#define F_PITCH       1
+#define F_START_STEPS 2
+#define F_START_TICKS 3
+#define F_LEN_STEPS   4
+#define F_LEN_TICKS   5
+
+static int32_t mod(int32_t a, int32_t n) { a %= n; return a < 0 ? a + n : a; }
+
+/* Change one field of one note: the cell (what the view draws), a local redraw message (0x42 / 0x43, as the stock
+ * knob handlers send for the current note) and the edit itself to the app. The edit goes to the parent's parent
+ * directly: through the parent it would also be copied to every other note of the box selection (FUN_080c0288). */
+static void set_note(uint8_t *v, uint8_t *c, int field, int32_t value)
 {
-    uint8_t *c = note_cell(v, i);
-    int fine = rd32(v + V_FINE) != 1;
-    wr32(v + V_CUR, i);
-    wr32(v + V_CUR_ID, rd32(c + CELL_ID));
-    fw_setval(v + V_SEL_STEP, i);
-    if (k == 1) {
-        int s = rd32(c + (fine ? CELL_START_T : CELL_START));
-        wr32(v + V_START_LAST, s);
-        fw_setval(v + V_START_STEP, s);
-    } else if (k == 2) {
-        int l = rd32(c + (fine ? CELL_LEN_T : CELL_LEN));
-        wr32(v + V_LEN_LAST, l);
-        fw_setval(v + V_LEN_STEP, l);
+    uint16_t pad = *(volatile uint16_t *)(v + V_PADCODE);
+    uint32_t id = (uint32_t)rd32(c + CELL_ID);
+    int fine = rd32(v + V_FINE);
+    switch (field) {
+    case F_PITCH:       wr32(c + CELL_PITCH, value); break;
+    case F_START_STEPS: wr32(c + CELL_START, value); break;
+    case F_START_TICKS: wr32(c + CELL_START_T, value); wr32(c + CELL_START, value / fine); break;
+    case F_LEN_STEPS:   wr32(c + CELL_LEN, value); break;
+    case F_LEN_TICKS:   wr32(c + CELL_LEN_T, value); wr32(c + CELL_LEN, value / fine < 1 ? 1 : value / fine); break;
+    }
+    int start_msg = field == F_START_STEPS || field == F_START_TICKS;
+    struct edit_msg local = {start_msg ? 0x43 : 0x42, 0, MSG_TAG, pad, 0, (int32_t)id,
+                             (int32_t)(uint16_t)(int16_t)rd32(c + CELL_LEN) |
+                                 (int32_t)((uint32_t)rd32(c + (start_msg ? CELL_START : CELL_PITCH)) << 16), 0};
+    fw_post(v, &local);
+    struct edit_msg edit = {0x16f, 0, MSG_TAG, pad, 0, (int32_t)id, field, value};
+    uint8_t *parent = *(uint8_t **)(v + V_PARENT);
+    if (parent)
+        fw_post(parent, &edit);
+}
+
+static int targeted(uint8_t *v, uint8_t *c, int boxed)
+{
+    return !boxed || fw_in_box(v, (uint32_t)rd32(c + CELL_ID));
+}
+
+/* Move every boxed note (boxed) or every note by d steps of knob k. */
+static void shift(uint8_t *v, int d, int k, int boxed)
+{
+    int n = rd32(v + V_NCOUNT), fine = rd32(v + V_FINE);
+    if (fine < 1)
+        fine = 1;
+    uint8_t *cells[BOX_MAX];
+    int m = 0;
+    for (int i = 0; i < n && m < BOX_MAX; i++) {
+        uint8_t *c = note_cell(v, i);
+        if (targeted(v, c, boxed))
+            cells[m++] = c;
+    }
+    if (k == 3) {
+        /* pitch: the whole set stops at the edge, so chords keep their shape */
+        int lo = rd32(v + V_PITCH_OFS), hi = lo + rd32(v + V_PITCH_STEP + 0x10) - 1;
+        if (hi < lo)
+            lo = 0, hi = 127;
+        for (int j = 0; j < m; j++) {
+            int p = rd32(cells[j] + CELL_PITCH);
+            if (p + d > hi)
+                d = hi - p;
+            if (p + d < lo)
+                d = lo - p;
+        }
+        if (d == 0)
+            return;
+        for (int j = 0; j < m; j++)
+            set_note(v, cells[j], F_PITCH, rd32(cells[j] + CELL_PITCH) + d);
+    } else if (k == 1) {
+        /* time: wraps around the pattern */
+        int count = rd32(v + V_START_STEP + 0x10);
+        for (int j = 0; j < m; j++) {
+            if (fine == 1) {
+                int32_t s = rd32(cells[j] + CELL_START) + d;
+                set_note(v, cells[j], F_START_STEPS, count > 0 ? mod(s, count) : (s < 0 ? 0 : s));
+            } else {
+                int32_t t = rd32(cells[j] + CELL_START_T) + d * fine;
+                set_note(v, cells[j], F_START_TICKS, count > 0 ? mod(t, count * fine) : (t < 0 ? 0 : t));
+            }
+        }
     } else {
-        int p = rd32(c + CELL_PITCH);
-        wr32(v + V_PITCH_LAST, p);
-        fw_setval(v + V_PITCH_STEP, p - rd32(v + V_PITCH_OFS));
+        /* length: each note from 1 step to the longest the knob allows */
+        int max = rd32(v + V_LEN_STEP + 0x10) - 1;
+        for (int j = 0; j < m; j++) {
+            if (fine == 1) {
+                int32_t l = rd32(cells[j] + CELL_LEN) + d;
+                l = l < 1 ? 1 : (max >= 1 && l > max ? max : l);
+                if (l != rd32(cells[j] + CELL_LEN))
+                    set_note(v, cells[j], F_LEN_STEPS, l);
+            } else {
+                int32_t l = rd32(cells[j] + CELL_LEN_T) + d * fine;
+                l = l < fine ? fine : (max >= 1 && l > max * fine ? max * fine : l);
+                if (l != rd32(cells[j] + CELL_LEN_T))
+                    set_note(v, cells[j], F_LEN_TICKS, l);
+            }
+        }
     }
 }
+
+static const int stepper_of[4] = {0, V_START_STEP, V_LEN_STEP, V_PITCH_STEP};
 
 static void edit(uint8_t *v, int delta, int k, knob_fn stock)
 {
@@ -199,35 +283,15 @@ static void edit(uint8_t *v, int delta, int k, knob_fn stock)
         stock(v, delta);                                /* a current note picked with the top-left knob: stock */
         return;
     }
-    int filled = 0, anchor = -1;
-    if (boxed > 0) {
-        int cur = rd32(v + V_CUR);
-        if (!PS->none && cur >= 0 && cur < n && fw_in_box(v, (uint32_t)rd32(note_cell(v, cur) + CELL_ID)))
-            anchor = cur;                               /* stock case: current note inside the box */
-        else
-            anchor = index_of(v, (uint32_t)rd32(v + V_BOX));
-    } else {
-        int m = n < BOX_MAX ? n : BOX_MAX;              /* every note stands in as the box for this edit */
-        for (int i = 0; i < m; i++)
-            wr32(v + V_BOX + 4 * i, rd32(note_cell(v, i) + CELL_ID));
-        wr32(v + V_BOX_N, m);
-        filled = 1;
-        anchor = 0;
-    }
-    if (anchor < 0) {
-        stock(v, delta);
-        return;
-    }
-    v[V_SEL_DIRTY] = 1;
-    if (anchor != rd32(v + V_CUR) || PS->none)
-        load_anchor(v, anchor, k);
-    stock(v, delta);
-    if (filled) {
-        wr32(v + V_BOX_N, 0);
-        v[V_SEL_DIRTY] = 1;
-    }
-    if (PS->none || boxed)
-        show_box(v);                                    /* no current note highlight of its own */
+    int cps = rd32(v + stepper_of[k] + 8);
+    if (cps <= 0)
+        cps = 1;
+    int32_t acc = PS->knob[k - 1] + delta;
+    int d = acc / cps;                                  /* whole steps; the rest waits for the next turn */
+    PS->knob[k - 1] = acc - d * cps;
+    if (d)
+        shift(v, d, k, boxed > 0);
+    show_box(v);                                        /* only the boxed notes are lit */
 }
 
 void prk_start(uint8_t *v, int delta) { edit(v, delta, 1, fw_start); }   /* bl @0x080c1792 */
