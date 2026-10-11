@@ -13,8 +13,9 @@
  *
  * This drops the USB copy of a note-on, note-off, CC, start, continue or stop when it is the echo of the same message
  * received from USB a moment ago. Every message the engine reads from USB is remembered with the audio block it arrived in; when the
- * engine sends a note or CC to USB, a matching remembered message from the last ECHO_BLOCKS blocks (~21 ms) cancels
- * the USB copy and is used up, so one received message cancels at most one echo. DIN output is never touched, and
+ * engine sends a note or CC to USB, a matching remembered message from the last ECHO_BLOCKS blocks (~32 ms) cancels
+ * the USB copy. It stays in force for the whole window: while recording, a MIDI sequence cell both monitors the note and
+ * (with seqfix) plays the just-recorded note again a block later, and both are echoes. DIN output is never touched, and
  * notes the Blackbox plays itself (sequences, pads) still reach the synth: only a send that matches something the
  * synth sent within the window is held back.
  * Matching: note-on and note-off by channel and note (the engine may pass a different velocity), CC by channel,
@@ -39,7 +40,7 @@ typedef void (*send_fn)(uint8_t *mgr, const struct midi_msg *m, int din, int usb
 #define fw_send  ((send_fn)FN(0x08044a0e))    /* queue a message for DIN (din != 0) and USB (usb != 0) */
 
 #define PORT_USB    1
-#define ECHO_BLOCKS 4            /* blocks of 256 frames: ~21 ms at 48 kHz */
+#define ECHO_BLOCKS 6            /* blocks of 256 frames: ~32 ms at 48 kHz */
 #define ENTRIES     32
 
 void bkp_enable(void);
@@ -131,9 +132,8 @@ void echo_send(uint8_t *mgr, const struct midi_msg *m, int din, int usb)
                 continue;
             }
             if (ES->e[i].key[0] == key[0] && ES->e[i].key[1] == key[1] && ES->e[i].key[2] == key[2]) {
-                ES->e[i].live = 0;                               /* one received message cancels one echo */
-                usb = 0;
-                break;
+                usb = 0;                                         /* every echo within the window: monitoring and a */
+                break;                                           /* sequencer replay of a just-recorded note both count */
             }
         }
     }
