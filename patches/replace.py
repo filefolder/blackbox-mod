@@ -11,8 +11,14 @@ def hook(at, stock, name):
 
 
 PATCHES = [
-    # parameter registration: Step Mode (0x88) toggle -> list OFF / ON / REPLACE (stored values 0, 1, 2)
+    # parameter registration: Step Mode (0x88) toggle -> list OFF / ON / REPLACE / ON+REPL (stored values 0..3)
     hook(0x0808CEAC, 0x0808C12C, "rpl_register"),
+    # every stock read of Step Mode: "snap to steps" = ON or ON+REPL
+    *[hook(a, 0x08093E9C, "stepmode_snap") for a in (0x08097DC0, 0x08097FAE, 0x08098756, 0x08098970, 0x080A031A,
+                                                      0x080A2194, 0x080A21A4)],
+    *[hook(a, 0x08099504, "stepmode_snap_get") for a in (0x080B49B4, 0x080BFF60)],
+    # Step Mode changed: the pattern's notes are converted when "snap to steps" changes, not on every value change
+    (0x080A029E, bytes.fromhex("bbf10002"), bl(0x080A029E, sym["rpl_snap_fp"])),
     # app-side recorder: note-on append, note-off length set
     hook(0x080A05FE, 0x08063B28, "rpl_on_thunk"),
     hook(0x080A073C, 0x08063B38, "rpl_off_thunk"),

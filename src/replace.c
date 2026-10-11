@@ -1,21 +1,22 @@
 /*
- * Replace recording: Step Mode gets a third value, REPLACE. Original 1010music Blackbox, firmware 3.1.9.
+ * Replace recording: Step Mode OFF / ON / REPLACE / ON+REPL. Original 1010music Blackbox, firmware 3.1.9.
  *
  * Stock, Step Mode (sequence parameter 0x88, xml "seqstepmode") is an OFF/ON toggle. Every reader treats any
  * non-zero value as ON: recorded notes snap to whole steps, and a note played on a step where a note of the same
  * pitch already starts replaces it. Everything else is layered on top of what is there.
  *
- * Here the parameter is a list OFF / ON / REPLACE (values 0, 1, 2; old presets keep their 0 or 1). REPLACE is ON
- * plus, while recording:
- *  - a note played on a step deletes every older note starting on that step (any pitch);
+ * Here the parameter is a list: 0 OFF, 1 ON (old presets keep their 0 or 1), 2 REPLACE (free timing, like OFF),
+ * 3 ON+REPL (snapped to steps, like ON). Every stock read of Step Mode goes through stepmode_snap / stepmode_snap_get,
+ * which hand the stock code "ON" for 1 and 3 and "OFF" for 0 and 2. In both replace modes, while recording:
+ *  - a note deletes every older note starting in the same step (any pitch) as soon as it is played;
  *  - when it is released, every older note starting inside its length is deleted too;
- *  - a note still held when the loop wraps is cut at the loop end, and continues as a new note from step 1.
+ *  - a note still held when the loop wraps is cut at the loop end, and continues as a new note from the loop start.
  * "Older" = recorded before the loop pass the new note belongs to (notes already in the pattern, and notes recorded
  * on earlier passes). Notes recorded on the same pass (chords, an arp, the rest of the take) are never deleted.
  *
  * The app-side recorder (FUN_080a02c0) builds the note in its frame and calls the event list: append at note-on
  * (bl @0x080a05fe), set-with-length at note-off (bl @0x080a073c). Both calls are replaced (replace_thunk.S passes the
- * recorder's sp and app); with Step Mode below 2 they do exactly the stock call.
+ * recorder's sp and app); outside the replace modes they do exactly the stock call.
  * Loop passes are told apart by their start time, from the time the note was played and the recorder's loop base
  * (moved by one loop when quantising pulled the note across the loop end). A note released past the loop end
  * belongs to the next pass.
@@ -56,7 +57,9 @@ typedef int64_t (*ldiv_fn)(int64_t a, int64_t b);
 #define P_STEP_LEN    0x85
 #define P_STEPS       0x86
 #define P_STEP_MODE   0x88
-#define MODE_REPLACE  2
+#define MODE_ON       1
+#define MODE_REPLACE  2          /* free timing */
+#define MODE_ON_REPL  3
 
 /* app */
 #define APP_PADS      0x18
@@ -79,11 +82,11 @@ typedef int64_t (*ldiv_fn)(int64_t a, int64_t b);
 #define EV_SIZE       0x18
 #define MSG_TIME      0x28       /* int64 ticks: when the note was played */
 #define EV_NOTE       1
-#define TICKS_STEP    960        /* event ticks per step */
+#define TICKS_STEP    960        /* event ticks per step when snapping to steps */
 
 void bkp_enable(void);
 
-static const char *const mode_names[3] = {"OFF", "ON", "REPLACE"};
+static const char *const mode_names[4] = {"OFF", "ON", "REPLACE", "ON+REPL"};
 
 /* Replaces Step Mode's registration (bl FUN_0808c12c @0x0808ceac: toggle, 0..1000) with a three-entry list. */
 void rpl_register(void *table, int param, int type, const char *label, int min, int max, const char *xml)
@@ -91,7 +94,30 @@ void rpl_register(void *table, int param, int type, const char *label, int min, 
     (void)type;
     (void)min;
     (void)max;
-    fw_register_list(table, param, label, mode_names, 3, xml);
+    fw_register_list(table, param, label, mode_names, 4, xml);
+}
+
+/* What the stock code means by Step Mode: snap to steps. */
+static int snaps(int v)
+{
+    return v != 0 && v != MODE_REPLACE;
+}
+
+/* Replaces FUN_08093e9c(params, 0x88) at every stock read of Step Mode. */
+int stepmode_snap(uint8_t *params, int param)
+{
+    return snaps(fw_param(params, param));
+}
+
+typedef int (*pget2_fn)(uint8_t *obj, void *pad, int param, int *out);
+#define fw_param_get ((pget2_fn)FN(0x08099504))
+
+/* Replaces FUN_08099504(obj, pad, 0x88, &out) at the piano roll's reads of Step Mode. */
+int stepmode_snap_get(uint8_t *obj, void *pad, int param, int *out)
+{
+    int ok = fw_param_get(obj, pad, param, out);
+    *out = snaps(*out);
+    return ok;
 }
 
 #define IDS 44
@@ -132,6 +158,7 @@ struct ctx {
     uint8_t *list;
     uint32_t pad, layer;
     int steps;
+    uint32_t unit;               /* event ticks per step */
 };
 
 static int mode(uint8_t *app)
@@ -197,15 +224,14 @@ static void enter_pass(struct ctx *c, int64_t pass, int64_t loop)
     RS->pass = pass;
 }
 
-/* Delete older notes starting on steps [from, to), except `keep` and notes of this pass (and the one before, if
- * with_prev). */
-static void clear_range(struct ctx *c, int from, int to, uint32_t keep, int with_prev)
+/* Delete older notes starting at [from, to) (event units), except `keep` and notes of this pass (and of the one
+ * before, if with_prev). */
+static void clear_range(struct ctx *c, uint32_t from, uint32_t to, uint32_t keep, int with_prev)
 {
     uint8_t ev[EV_SIZE] __attribute__((aligned(4)));
     for (int i = 0; fw_list_get(c->list, i, ev);) {
-        uint32_t id = rd32(ev + EV_ID);
-        int step = (int)(rd32(ev + EV_START) / TICKS_STEP);
-        if (ev[EV_TYPE] == EV_NOTE && step >= from && step < to && id != keep &&
+        uint32_t id = rd32(ev + EV_ID), start = rd32(ev + EV_START);
+        if (ev[EV_TYPE] == EV_NOTE && start >= from && start < to && id != keep &&
             !in_set(RS->cur, RS->ncur, id) && !(with_prev && in_set(RS->prev, RS->nprev, id))) {
             fw_list_del(c->list, id);
             fw_engine_del(ENGINE, c->pad, id, c->layer);
@@ -217,7 +243,8 @@ static void clear_range(struct ctx *c, int from, int to, uint32_t keep, int with
 
 static int setup(struct ctx *c, uint8_t *list, uint8_t *frame, uint8_t *app)
 {
-    if (mode(app) != MODE_REPLACE)
+    int m = mode(app);
+    if (m != MODE_REPLACE && m != MODE_ON_REPL)
         return 0;
     c->app = app;
     c->frame = frame;
@@ -225,7 +252,9 @@ static int setup(struct ctx *c, uint8_t *list, uint8_t *frame, uint8_t *app)
     c->pad = rd32(frame + F_PAD);
     c->layer = frame[F_LAYER];
     c->steps = (int)rd32(frame + F_STEPS);
-    return c->steps > 0;
+    /* event times: 960 per step when snapping to steps, else clock ticks (960 per beat) */
+    c->unit = m == MODE_ON_REPL ? TICKS_STEP : (uint32_t)ticks_per_step(c);
+    return c->steps > 0 && c->unit > 0;
 }
 
 /* Note-on: replaces the append of the new (open) note, bl @0x080a05fe. */
@@ -233,10 +262,10 @@ void rpl_on(uint8_t *list, uint8_t *ev, uint8_t *frame, uint8_t *app, const uint
 {
     struct ctx c;
     if (setup(&c, list, frame, app)) {
-        int s = (int)(rd32(ev + EV_START) / TICKS_STEP);
-        int64_t loop, pass = pass_of(&c, *(const int64_t *)(msg + MSG_TIME), s, &loop);
-        enter_pass(&c, pass, loop);     /* loop 0 (Step Len unknown): every note counts as one pass */
-        clear_range(&c, s, s + 1, rd32(ev + EV_ID), 0);
+        uint32_t step = rd32(ev + EV_START) / c.unit;
+        int64_t loop, pass = pass_of(&c, *(const int64_t *)(msg + MSG_TIME), (int)step, &loop);
+        enter_pass(&c, pass, loop);
+        clear_range(&c, step * c.unit, (step + 1) * c.unit, rd32(ev + EV_ID), 0);   /* the step it is played in */
         add_cur(rd32(ev + EV_ID));
     }
     fw_list_append(list, ev);
@@ -252,20 +281,17 @@ void rpl_off(uint8_t *list, uint8_t *ev, uint8_t *frame, uint8_t *app)
         return;
     }
     uint32_t id = rd32(ev + EV_ID);
-    int s = (int)(rd32(ev + EV_START) / TICKS_STEP);
-    int len = (int)(rd32(ev + EV_LEN) / TICKS_STEP);
+    uint32_t loop = (uint32_t)c.steps * c.unit;
+    uint32_t s = rd32(ev + EV_START), len = rd32(ev + EV_LEN);
     if (len < 1)
         len = 1;
-    int first = len, second = 0;
-    if (s + len > c.steps) {
-        first = c.steps - s;
-        second = s + len - c.steps;
-        if (first < 1)
-            first = 1;
+    uint32_t first = len, second = 0;
+    if (s < loop && s + len > loop) {
+        first = loop - s;
+        second = s + len - loop;
         if (second > s)
             second = s;          /* held more than a whole loop: up to where it started */
     }
-    int end = s + first;
     bkp_enable();
     int known = RS->magic == MAGIC && RS->key == (c.pad | c.layer << 24);
     int same_pass = known && in_set(RS->cur, RS->ncur, id);
@@ -274,21 +300,21 @@ void rpl_off(uint8_t *list, uint8_t *ev, uint8_t *frame, uint8_t *app)
     if (second && same_pass && RS->loop)
         enter_pass(&c, RS->pass + RS->loop, RS->loop);  /* released on the next pass, nothing played there yet */
     if (second)
-        *(volatile uint32_t *)(ev + EV_LEN) = (uint32_t)first * TICKS_STEP;
+        *(volatile uint32_t *)(ev + EV_LEN) = first;
     fw_list_set(list, ev);
     /* older than the pass the note started on: if that is no longer the current pass, keep the one before too */
-    clear_range(&c, s, end, id, !in_set(RS->cur, RS->ncur, id));
+    clear_range(&c, s, s + first, id, !in_set(RS->cur, RS->ncur, id));
     if (!second)
         return;
 
-    /* the part after the loop wrap: a new note from step 1 */
+    /* the part after the loop wrap: a new note from the loop start */
     uint8_t ev2[EV_SIZE] __attribute__((aligned(4)));
     for (int i = 0; i < EV_SIZE; i++)
         ev2[i] = ev[i];
     volatile uint32_t *next = (volatile uint32_t *)(app + APP_NEXT_ID);
     uint32_t id2 = (*next)++;
     *(uint32_t *)(ev2 + EV_START) = 0;
-    *(uint32_t *)(ev2 + EV_LEN) = (uint32_t)second * TICKS_STEP;
+    *(uint32_t *)(ev2 + EV_LEN) = second;
     *(uint32_t *)(ev2 + EV_ID) = id2;
     clear_range(&c, 0, second, id2, 0);
     add_cur(id2);

@@ -32,9 +32,10 @@ out (new FX, fixes). That's all the list is for.
 - **Piano roll knobs**: nothing is selected until you draw a box around notes. Bottom-left moves the boxed notes (or
   every note) in time, bottom-right in pitch, top-right sets their length. Top-left steps through single notes;
   past the last one it goes back to nothing selected.
-- **Replace recording**: Step Mode gets a third value, REPLACE. While recording, a note you play deletes the older
-  notes starting where it sits (from earlier loop passes or already in the pattern); notes from the same pass and
-  steps you don't play stay. A note held over the loop end is cut there and continues from step 1.
+- **Replace recording**: Step Mode becomes OFF / ON / REPLACE / ON+REPL. REPLACE records in free time (like OFF),
+  ON+REPL snaps to steps (like ON). In both, while recording, a note you play deletes the older notes starting in
+  its step and inside its length (from earlier loop passes or already in the pattern); notes from the same pass and
+  places you don't play stay. A note held over the loop end is cut there and continues from the loop start.
 
 ### Known issues
 

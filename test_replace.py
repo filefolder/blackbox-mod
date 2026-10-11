@@ -35,7 +35,7 @@ class Rig:
         e = self.e = Emu(image, "out/cave.elf")
         e.uc.mem_map(0x38800000, 0x1000)
         e.uc.mem_map(0x58024000, 0x1000)
-        self.params = {0xC0: 0, 0x88: 2, 0x85: 10, 0x86: STEPS, 0x46: 15, 0xB7: 1}               # DispMode KEYS
+        self.params = {0xC0: 0, 0x88: 3, 0x85: 10, 0x86: STEPS, 0x46: 15, 0xB7: 1}   # ON+REPL, DispMode KEYS
         self.events, self.engine, self.notified = [], [], []
         self.now = 0
         e.stub(0x08097CE8, value=PS)                                   # paramset for (app, pads, layer)
@@ -119,10 +119,10 @@ r.e.uc.mem_write(TABLE, bytes(0x36B0))
 r.e.call(0x0808C158, 0, count=20_000_000)
 d = TABLE + 0x88 * 28
 kind, names, count, xml = r.e.r8(d + 2), r.e.r32(d + 8), r.e.r32(d + 12), r.e.r32(d + 24)
-check("Step Mode is registered as a list of 3, xml name unchanged",
-      r.e.r16(d) == 0x88 and kind == 5 and count == 3 and r.e.cstr(xml) == "seqstepmode", (kind, count))
-check("  ... named OFF / ON / REPLACE, label unchanged",
-      [r.e.cstr(r.e.r32(names + 4 * i)) for i in range(3)] == ["OFF", "ON", "REPLACE"] and
+check("Step Mode is registered as a list of 4, xml name unchanged",
+      r.e.r16(d) == 0x88 and kind == 5 and count == 4 and r.e.cstr(xml) == "seqstepmode", (kind, count))
+check("  ... named OFF / ON / REPLACE / ON+REPL, label unchanged",
+      [r.e.cstr(r.e.r32(names + 4 * i)) for i in range(4)] == ["OFF", "ON", "REPLACE", "ON+REPL"] and
       r.e.cstr(r.e.r32(d + 4)) == "Step Mode:", r.e.cstr(r.e.r32(d + 4)))
 
 # --- stock recorder, step mode ON, for comparison: layered
@@ -148,11 +148,11 @@ r.on(62, 4)
 r.off(62, 6)
 check("patched OFF: layered, nothing deleted", len(r.notes()) == 2 and (4, 2, 60) in r.notes(), r.notes())
 
-# --- REPLACE
+# --- ON+REPL (snapped to steps)
 r = Rig(IMAGE)
 r.existing((0, 1, 50), (4, 2, 60), (4, 1, 64), (5, 1, 65), (6, 1, 67), (9, 1, 70))
 r.on(62, 4)
-check("REPLACE note-on on step 5: the older notes starting there are gone at once (any pitch)",
+check("ON+REPL note-on on step 5: the older notes starting there are gone at once (any pitch)",
       r.notes() == [(0, 1, 50), (4, 0, 62), (5, 1, 65), (6, 1, 67), (9, 1, 70)], r.notes())
 check("  ... and the engine was told", sorted(x[1] for x in r.engine if x[0] == "del") == [11, 12], r.engine)
 r.on(66, 4)
@@ -222,6 +222,50 @@ r.on(61, 7, loop=1)
 r.off(61, 8, loop=1)
 check("only where played: other steps untouched across passes", r.notes() == [(2, 1, 50), (3, 1, 60), (7, 1, 61)],
       r.notes())
+
+# --- every stock read of Step Mode sees "snap to steps" only for ON and ON+REPL
+from unicorn.arm_const import UC_ARM_REG_R11, UC_ARM_REG_R2, UC_ARM_REG_R0
+r = Rig(IMAGE)
+for v, want in ((0, 0), (1, 1), (2, 0), (3, 1)):
+    r.params[0x88] = v
+    r.e.call("stepmode_snap", PS, 0x88)
+    a = r.e.uc.reg_read(UC_ARM_REG_R0)
+    OUT = 0x24032000
+    r.e.stub(0x08099504, lambda: r.e.w32(r.e.arg(3), r.params[0x88]), value=1)
+    r.e.call("stepmode_snap_get", APP, MSG, 0x88, OUT)
+    b = r.e.r32(OUT)
+    r.e.uc.reg_write(UC_ARM_REG_R11, v)
+    r.e.call("rpl_snap_fp")
+    c = r.e.uc.reg_read(UC_ARM_REG_R2)
+    check(f"Step Mode {v}: stock reads see {want} (param read, piano roll read, change handler)", (a, b, c) == (want,) * 3,
+          (a, b, c))
+img = open(IMAGE, "rb").read()
+check("change handler: the bl sits where subs.w r2, fp, #0 was, followed by it ne; movne r2, #1",
+      img[0x080A02A2 - 0x08040000:0x080A02A6 - 0x08040000] == bytes.fromhex("18bf0122"))
+
+# --- REPLACE: free timing (event times in clock ticks, 240 per step here)
+r = Rig(IMAGE)
+r.params[0x88] = 2
+r.existing()
+for k, (st, ln, p) in enumerate(((0, TPS, 50), (4 * TPS + 30, TPS, 60), (4 * TPS + 200, 60, 64), (5 * TPS + 100, TPS, 65),
+                                 (6 * TPS + 120, TPS, 67))):
+    r.events.append(dict(type=1, start=st, len=ln, id=10 + k, pitch=p))
+r.midi(5, 62, 4 * TPS + 100)
+ticks = lambda: sorted((x["start"], x["len"], x["pitch"]) for x in r.events)
+check("REPLACE note-on: not snapped (start in ticks as played)", any(x == (4 * TPS + 100, 0, 62) for x in ticks()), ticks())
+check("  ... older notes starting anywhere in that step are gone", [x[2] for x in ticks()] == [50, 62, 65, 67], ticks())
+r.midi(6, 62, 6 * TPS + 50)
+check("REPLACE note-off: length as played, older notes starting inside it gone, the one after it stays",
+      ticks() == [(0, TPS, 50), (4 * TPS + 100, 2 * TPS - 50, 62), (6 * TPS + 120, TPS, 67)], ticks())
+
+r = Rig(IMAGE)
+r.params[0x88] = 2
+r.events.append(dict(type=1, start=TPS // 2, len=60, id=10, pitch=50))
+r.events.append(dict(type=1, start=TPS + 10, len=60, id=11, pitch=51))
+r.midi(5, 60, 15 * TPS + 40)
+r.midi(6, 60, LOOP + TPS // 2 + 20)
+check("REPLACE held over the loop end: cut at the end, continued from the loop start, older notes under it gone",
+      ticks() == [(0, TPS // 2 + 20, 60), (TPS + 10, 60, 51), (15 * TPS + 40, TPS - 40, 60)], ticks())
 
 print(f"{fails} failed" if fails else "all passed")
 sys.exit(1 if fails else 0)
