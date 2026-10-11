@@ -29,6 +29,12 @@ out (new FX, fixes). That's all the list is for.
 - **Sequencer fix**: a note added just ahead of the playhead plays on that pass.
 - **Wrap-around note moves**: in the piano roll, moving notes in time with the timing knob carries them past the
   pattern's end back to its start (and the other way), selection and all, instead of stopping at the edges.
+- **Piano roll knobs**: nothing is selected until you draw a box around notes. Bottom-left moves the boxed notes (or
+  every note) in time, bottom-right in pitch, top-right sets their length. Top-left steps through single notes;
+  past the last one it goes back to nothing selected.
+- **Replace recording**: Step Mode gets a third value, REPLACE. While recording, a note you play deletes the older
+  notes starting where it sits (from earlier loop passes or already in the pattern); notes from the same pass and
+  steps you don't play stay. A note held over the loop end is cut there and continues from step 1.
 
 ### Known issues
 
@@ -61,7 +67,7 @@ Needs `arm-none-eabi-gcc` and Python 3. Put your stock image at `firmware/BLACKB
 
 ```
 ./build.sh
-python3 patch.py solo slice duck chord cond filter cpu od comp seqfix fx2 munchi roll cave
+python3 patch.py solo slice duck chord cond filter cpu od comp seqfix fx2 munchi roll prknobs replace cave
 ```
 
 That writes `out/<patchsets>/BLACKBOX.bin`, byte-identical to the release. `python3 make_patch.py <image> <version>`
