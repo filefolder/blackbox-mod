@@ -36,7 +36,8 @@ out (new FX, fixes). That's all the list is for.
 - **Replace recording**: Step Mode becomes OFF / ON / REPLACE / ON+REPL. REPLACE records in free time (like OFF),
   ON+REPL snaps to steps (like ON). In both, while recording, a note you play deletes the older notes starting in
   its step and inside its length (from earlier loop passes or already in the pattern); notes from the same pass and
-  places you don't play stay. A note held over the loop end is cut there and continues from the loop start.
+  places you don't play stay. A note held over the loop end is cut there and continues from the loop start,
+  unless you let go within half a step after the loop end.
 
 ### Known issues
 

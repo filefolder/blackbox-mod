@@ -267,5 +267,21 @@ r.midi(6, 60, LOOP + TPS // 2 + 20)
 check("REPLACE held over the loop end: cut at the end, continued from the loop start, older notes under it gone",
       ticks() == [(0, TPS // 2 + 20, 60), (TPS + 10, 60, 51), (15 * TPS + 40, TPS - 40, 60)], ticks())
 
+# --- let go just after the loop end: the note ends there, the first note of the pattern stays
+r = Rig(IMAGE)
+r.params[0x88] = 2
+r.events.append(dict(type=1, start=0, len=TPS, id=10, pitch=50))
+r.midi(5, 60, 14 * TPS)
+r.midi(6, 60, LOOP + TPS // 2 - 10)
+check("REPLACE: released less than half a step after the loop end: ends at the loop end, step-1 note kept",
+      ticks() == [(0, TPS, 50), (14 * TPS, 2 * TPS, 60)], ticks())
+r = Rig(IMAGE)
+r.params[0x88] = 2
+r.events.append(dict(type=1, start=0, len=TPS, id=10, pitch=50))
+r.midi(5, 60, 14 * TPS)
+r.midi(6, 60, LOOP + TPS // 2 + 10)
+check("REPLACE: released more than half a step after: continues from the loop start as before",
+      ticks() == [(0, TPS // 2 + 10, 60), (14 * TPS, 2 * TPS, 60)], ticks())
+
 print(f"{fails} failed" if fails else "all passed")
 sys.exit(1 if fails else 0)

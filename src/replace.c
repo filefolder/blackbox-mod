@@ -10,7 +10,8 @@
  * which hand the stock code "ON" for 1 and 3 and "OFF" for 0 and 2. In both replace modes, while recording:
  *  - a note deletes every older note starting in the same step (any pitch) as soon as it is played;
  *  - when it is released, every older note starting inside its length is deleted too;
- *  - a note still held when the loop wraps is cut at the loop end, and continues as a new note from the loop start.
+ *  - a note still held when the loop wraps is cut at the loop end, and continues as a new note from the loop start
+ *    (unless it is let go within half a step after the loop end: then it just ends there).
  * "Older" = recorded before the loop pass the new note belongs to (notes already in the pattern, and notes recorded
  * on earlier passes). Notes recorded on the same pass (chords, an arp, the rest of the take) are never deleted.
  *
@@ -291,6 +292,8 @@ void rpl_off(uint8_t *list, uint8_t *ev, uint8_t *frame, uint8_t *app)
         second = s + len - loop;
         if (second > s)
             second = s;          /* held more than a whole loop: up to where it started */
+        if (2 * second <= c.unit)
+            second = 0;          /* let go within half a step after the loop end: that is the end, not a new note */
     }
     bkp_enable();
     int known = RS->magic == MAGIC && RS->key == (c.pad | c.layer << 24);
@@ -299,8 +302,8 @@ void rpl_off(uint8_t *list, uint8_t *ev, uint8_t *frame, uint8_t *app)
         enter_pass(&c, 0, 0);
     if (second && same_pass && RS->loop)
         enter_pass(&c, RS->pass + RS->loop, RS->loop);  /* released on the next pass, nothing played there yet */
-    if (second)
-        *(volatile uint32_t *)(ev + EV_LEN) = first;
+    if (first != len)
+        *(volatile uint32_t *)(ev + EV_LEN) = first;   /* cut at the loop end */
     fw_list_set(list, ev);
     /* older than the pass the note started on: if that is no longer the current pass, keep the one before too */
     clear_range(&c, s, s + first, id, !in_set(RS->cur, RS->ncur, id));
