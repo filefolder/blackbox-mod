@@ -77,10 +77,14 @@ static char *put_uint(char *p, unsigned v)
     return p;
 }
 
+int usbdiag_compose(char *buf) __attribute__((weak));     /* usbdiag.c, when built in */
+
 /* "3.1.x 34/71%", "3.1.x --%", or just the version before the first second. Writes at most 16 bytes. */
 static void compose(char *buf)
 {
     char *p = buf;
+    if (usbdiag_compose && usbdiag_compose(buf))
+        return;                                              /* USB MIDI diagnostics while a device is attached */
     for (const char *v = VERSION; *v && p < buf + 8; v++)
         *p++ = *v;
     if (M->magic == MAGIC && M->status == STATUS_OK) {

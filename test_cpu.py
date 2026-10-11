@@ -12,6 +12,8 @@ from emu import Emu
 e = Emu("out/solo+slice+duck+chord+cond+filter+cpu+od+comp+seqfix+fx2+munchi+cave/BLACKBOX.bin", "out/cave.elf")
 V = e.cstr(0x080CF290)                          # "3.1.x" of this build
 e.uc.mem_map(0xE0000000, 0x100000)
+e.uc.mem_map(0x38800000, 0x1000)                  # backup SRAM (usbdiag.c, read by the label text)
+e.uc.mem_map(0x58024000, 0x1000)                  # RCC / PWR (bkp_enable)
 CYC, STATE = 0xE0001004, 0x2405FFD0
 TEXT = [0x24060000, 0x24061000, 0x24062000]
 clock = {"busy": 0, "idle": 0, "got": 1}
