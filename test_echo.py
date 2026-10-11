@@ -89,7 +89,7 @@ for name, b in (("stock", stock), ("patched", mod)):
         check("patched: the echo is not sent back to USB", usb == [], usb)
 
 usb, _ = mod.send([0x90, 60, 100])
-check("patched: a second send of the same note is not an echo (one received note cancels one send)", usb == ["903c64"], usb)
+check("patched: a second send of the same note in the window is an echo too (monitoring + sequencer replay)", usb == [], usb)
 mod.usb_in([0x80, 60, 0])
 mod.block()
 usb, _ = mod.send([0x90, 60, 0])
@@ -118,16 +118,16 @@ check("patched: echo with DIN out on: DIN still gets the note, USB does not", us
 
 mod.usb_in([0x90, 55, 100])
 mod.block()
-for _ in range(5):
+for _ in range(7):
     mod.block()
 usb, _ = mod.send([0x90, 55, 100])
-check("patched: five blocks (~27 ms) later the same note is no longer treated as an echo", usb == ["903764"], usb)
+check("patched: seven blocks (~37 ms) later the same note is no longer treated as an echo", usb == ["903764"], usb)
 mod.usb_in([0x90, 56, 100])
 mod.block()
-for _ in range(3):
+for _ in range(5):
     mod.block()
 usb, _ = mod.send([0x90, 56, 100])
-check("patched: within the window (~21 ms) it still is", usb == [], usb)
+check("patched: within the window (~32 ms) it still is", usb == [], usb)
 
 mod.din_in(0x90, 57, 100)
 got = mod.block()
@@ -152,8 +152,10 @@ mod.usb_in([0xFC])
 mod.block()
 usb, _ = mod.send([0xFC])
 check("patched: the Stop echo is dropped", usb == [], usb)
+for _ in range(7):
+    mod.block()
 usb, _ = mod.send([0xFA])
-check("patched: a Start the Blackbox sends on its own still goes to USB", usb == ["fa"], usb)
+check("patched: a Start the Blackbox sends on its own (outside the window) still goes to USB", usb == ["fa"], usb)
 usb, _ = mod.send([0xF8])
 check("patched: one-byte messages pass through", usb == ["f8"], usb)
 

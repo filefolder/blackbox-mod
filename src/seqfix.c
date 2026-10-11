@@ -116,14 +116,33 @@ static void fix_index(uint8_t *seq, unsigned idx, uint32_t edited_id)
     list[2] = k;
 }
 
-/* Note-seq vtable +0x58 (stock 0x0805c0d8): add or update a note in pattern idx. */
+/* Is a note with this id already in the pattern's list? */
+static int has_id(const uint8_t *seq, unsigned idx, uint32_t id)
+{
+    const uint32_t *list = (const uint32_t *)(seq + SEQ_PATTERNS + idx * PATTERN_SIZE + PAT_LIST);
+    const uint16_t *handles = (const uint16_t *)list[0];
+    const uint8_t *pool = list[4] ? *(const uint8_t *const *)list[4] : 0;
+    if (!handles || !pool)
+        return 0;
+    for (uint32_t k = 0; k < list[1]; k++)
+        if (*(const uint32_t *)(pool + (handles[k] & 0x3fff) * EVENT_SIZE + EVENT_ID) == id)
+            return 1;
+    return 0;
+}
+
+/* Note-seq vtable +0x58 (stock 0x0805c0d8): add or update a note in pattern idx.
+ * Only a note that is new gets the grace replay. An update of a note already in the pattern (a length set at
+ * note-off while recording, a velocity edit) must not play it again: live recording would sound every short note
+ * twice, and send it twice to a MIDI device, where a synth whose arpeggiator takes incoming notes snowballs. */
 void seq_set(uint8_t *seq, void *event, void *unused, unsigned idx)
 {
     (void)unused;
     if (idx >= PATTERNS)
         return;
+    uint32_t id = *(const uint32_t *)((const uint8_t *)event + EVENT_ID);
+    int update = has_id(seq, idx, id);
     fw_list_set(seq + SEQ_PATTERNS + idx * PATTERN_SIZE + PAT_LIST, event);
-    fix_index(seq, idx, *(const uint32_t *)((const uint8_t *)event + EVENT_ID));
+    fix_index(seq, idx, update ? 0 : id);
 }
 
 /* Note-seq vtable +0x5c (stock 0x0805c0f0): delete note `id` from pattern idx. */

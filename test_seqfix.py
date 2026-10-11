@@ -105,6 +105,23 @@ play_at(1300)
 add(1000)
 check("a note 300 ticks behind the playhead (past the grace) waits for the next pass", index() == 3, (starts(), index()))
 
+# live recording: the note goes in at note-on, then is updated (its length) at note-off
+build([0, 960, 1920, 2880], index=2)
+play_at(1000)
+add(980, nid=600)
+check("recording: a new note 20 ticks behind the playhead gets the grace replay once (index 2)", index() == 2, (starts(), index()))
+play_at(1000)
+e.w32(LIST + 8, 3)                               # the player has played it: index past it
+play_at(1150)
+e.uc.mem_write(EVT, struct.pack("<BBHIII", 1, 0, 0, 980, 120, 600) + bytes(8))   # note-off: length 120
+e.call("seq_set", SEQ, EVT, 0, 0)
+check("recording: the update at its note-off does not replay it (index stays past it)", index() == 3, (starts(), index()))
+build([0, 960, 1920, 2880], index=2)
+play_at(1000)
+e.uc.mem_write(EVT, struct.pack("<BBHIII", 1, 0, 0, 960, 480, 101) + bytes(8))   # beat 2 (played), velocity edit
+e.call("seq_set", SEQ, EVT, 0, 0)
+check("editing a note that already played this pass (inside the grace) does not replay it", index() == 2, (starts(), index()))
+
 build([0, 960, 1920, 2880], index=4)
 play_at(3000)
 add(3500, fn="stock")
