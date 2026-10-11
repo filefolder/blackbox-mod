@@ -17,8 +17,9 @@
  *
  * This replaces the copy into a slot (bl FUN_080446da @0x08044f2c) with decoding the transfer straight into the
  * message queue, packet by packet, exactly as the stock decoder builds each message. Packets with CIN 0..7 are
- * skipped (stock never delivers system common or SysEx on any port), an all-zero packet ends the transfer, and if
- * the queue is ever full the new message is dropped instead of overwriting one the engine has not read yet.
+ * skipped (stock never delivers system common or SysEx on any port), and so are all-zero packets: stock stops at the
+ * first one, which loses the rest of a transfer from a device that pads every 64-byte USB packet with empty events.
+ * If the queue is ever full the new message is dropped instead of overwriting one the engine has not read yet.
  * The slots are never written again, so the engine's drain finds them empty; the queue's single writer is now this
  * callback (USBH_Thread), its single reader the audio task, as before.
  */
@@ -78,9 +79,8 @@ void usbmidi_rx(uint8_t *mgr, const uint8_t *buf, unsigned n)
 
     for (unsigned i = 0; i + 4 <= n; i += 4) {
         const uint8_t *p = buf + i;
-        if ((p[0] | p[1] | p[2] | p[3]) == 0)
-            break;                                           /* end of this transfer */
-        if (!usbmidi_decode(p, &m))
+        if (!usbmidi_decode(p, &m))                          /* includes all-zero padding: devices that pad each
+                                                                64-byte packet put more packets after it */
             continue;
         uint32_t w = *wr;
         if (w - *rd >= Q_SIZE)

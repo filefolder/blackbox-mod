@@ -117,6 +117,16 @@ got = block(mod)
 check("patched: the same 12 transfers deliver 12 note-ons and 12 note-offs, paired and in order",
       [m for _, m in got] == [x for n in range(12) for x in (f"90{40 + n:02x}64", f"80{40 + n:02x}00")], got)
 
+# --- devices that pad every 64-byte USB packet with empty events
+PAD = lambda *events: list(events) + [bytes(4)] * (16 - len(events))
+for e in (stock, mod):
+    transfer(e, PAD(on(80)) + PAD(off(80), on(81)) + PAD(off(81)))
+got = block(stock)
+check("stock: a transfer of three padded 64-byte packets delivers only the first packet's events",
+      got == [(1, "905064")], got)
+got = block(mod)
+check("patched: all three padded packets are decoded", got == [(1, "905064"), (1, "805000"), (1, "905164"), (1, "805100")], got)
+
 # --- the queue never overwrites unread messages
 for n in range(20):
     transfer(mod, [pkt(0xB, 0xB0, 7, n % 128)] * 16)       # 320 messages, one block
