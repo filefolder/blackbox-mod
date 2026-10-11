@@ -36,6 +36,8 @@ out (new FX, fixes). That's all the list is for.
 - **USB MIDI echo filter**: notes, CCs and start / stop / continue just received from the USB host port are not
   sent straight back to it (USB Dev Out, clock send). A synth on one USB cable whose arpeggiator reacts to incoming
   notes or Start no longer ends up in a feedback loop.
+- **USB MIDI recovery**: if a USB MIDI transfer stalls or errors out, it is restarted within ~20 ms instead of
+  needing the cable replugged.
 
 ### Known issues
 
@@ -68,7 +70,7 @@ Needs `arm-none-eabi-gcc` and Python 3. Put your stock image at `firmware/BLACKB
 
 ```
 ./build.sh
-python3 patch.py solo slice duck chord cond filter cpu od comp seqfix fx2 munchi usbmidi midirt echo cave
+python3 patch.py solo slice duck chord cond filter cpu od comp seqfix fx2 munchi usbmidi midirt echo usbrecover cave
 ```
 
 That writes `out/<patchsets>/BLACKBOX.bin`, byte-identical to the release. `python3 make_patch.py <image> <version>`
