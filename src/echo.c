@@ -18,8 +18,10 @@
  * (with seqfix) plays the just-recorded note again a block later, and both are echoes. DIN output is never touched, and
  * notes the Blackbox plays itself (sequences, pads) still reach the synth: only a send that matches something the
  * synth sent within the window is held back.
- * Matching: note-on and note-off by channel and note (the engine may pass a different velocity), CC by channel,
- * controller and value, start / continue / stop by kind. Note-on with velocity 0 counts as note-off on both sides.
+ * Matching: note-on and note-off by note (the engine may pass a different velocity), CC by controller and value,
+ * start / continue / stop by kind, all regardless of channel: a MIDI sequence cell recording the synth re-sends what
+ * it hears on the cell's own output channel, which the synth may well be listening to. Note-on with velocity 0 counts
+ * as note-off on both sides.
  *
  * Everything here runs in the audio task: the engine's MIDI reads and sends happen in its per-block process.
  */
@@ -85,7 +87,7 @@ static int key_of(const struct midi_msg *m, uint8_t key[3])
         kind = 0x80;
     if (kind != 0x80 && kind != 0x90 && kind != 0xb0)
         return 0;
-    key[0] = (uint8_t)(kind | (st & 0x0f));
+    key[0] = (uint8_t)kind;                                  /* any channel: a sequence cell re-sends on its own */
     key[1] = m->b[1];
     key[2] = kind == 0xb0 ? m->b[2] : 0;
     return 1;
