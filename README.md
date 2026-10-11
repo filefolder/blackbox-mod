@@ -27,6 +27,9 @@ out (new FX, fixes). That's all the list is for.
 - **Reverb Type**: Plate (stock) or Room.
 - **Delay Type**: Delay (stock) or Munchi (a port of the CHOMPI TEMPO granular delay).
 - **Sequencer fix**: a note added just ahead of the playhead plays on that pass.
+- **USB MIDI echo filter**: notes, CCs and start / stop / continue just received from the USB host port are not
+  sent straight back to it (USB Dev Out, clock send). A synth on one USB cable whose arpeggiator reacts to incoming
+  notes or Start no longer ends up in a feedback loop.
 
 ### Known issues
 
@@ -59,7 +62,7 @@ Needs `arm-none-eabi-gcc` and Python 3. Put your stock image at `firmware/BLACKB
 
 ```
 ./build.sh
-python3 patch.py solo slice duck chord cond filter cpu od comp seqfix fx2 munchi cave
+python3 patch.py solo slice duck chord cond filter cpu od comp seqfix fx2 munchi echo cave
 ```
 
 That writes `out/<patchsets>/BLACKBOX.bin`, byte-identical to the release. `python3 make_patch.py <image> <version>`
