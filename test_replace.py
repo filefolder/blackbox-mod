@@ -243,6 +243,22 @@ img = open(IMAGE, "rb").read()
 check("change handler: the bl sits where subs.w r2, fp, #0 was, followed by it ne; movne r2, #1",
       img[0x080A02A2 - 0x08040000:0x080A02A6 - 0x08040000] == bytes.fromhex("18bf0122"))
 
+# --- the engine's own Step Mode copy (sequence + 0x5e: event times are steps): run the stock switch case
+from unicorn.arm_const import UC_ARM_REG_R5, UC_ARM_REG_SP, UC_ARM_REG_PC
+from emu import STACK
+SEQOBJ = 0x24033000
+for image, name, want in ((STOCK, "stock", (0, 1, 1, 1)), (IMAGE, "patched", (0, 1, 0, 1))):
+    r = Rig(image)
+    got = []
+    for v in range(4):
+        r.e.uc.mem_write(SEQOBJ, bytes(0x80))
+        r.e.uc.reg_write(UC_ARM_REG_R5, SEQOBJ)
+        r.e.uc.reg_write(UC_ARM_REG_SP, STACK)
+        r.e.w32(STACK + 0x28, v)
+        r.e.uc.emu_start(0x0805EF8C | 1, 0x0805EF98, count=100)
+        got.append(r.e.r8(SEQOBJ + 0x5E))
+    check(f"{name} engine, Step Mode 0..3 -> sequence 'times are steps' flag {want}", tuple(got) == want, got)
+
 # --- REPLACE: free timing (event times in clock ticks, 240 per step here)
 r = Rig(IMAGE)
 r.params[0x88] = 2

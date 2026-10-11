@@ -40,3 +40,16 @@ rpl_snap_fp:                    /* @0x080a029e, replaces subs.w r2, fp, #0 (then
     movs    r2, #1
 1:  cmp     r2, #0
     bx      lr
+
+    .global rpl_snap_r3
+    .thumb_func
+    .type rpl_snap_r3, %function
+rpl_snap_r3:                    /* engine, sequence parameter update, case Step Mode (@0x0805ef8e, replaces
+                                   subs r3, #0; it ne; movne r3, #1): seq + 0x5e = "event times are steps" */
+    cmp     r3, #2
+    it      eq
+    moveq   r3, #0
+    cmp     r3, #0
+    it      ne
+    movne   r3, #1
+    bx      lr

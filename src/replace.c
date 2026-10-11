@@ -6,8 +6,10 @@
  * pitch already starts replaces it. Everything else is layered on top of what is there.
  *
  * Here the parameter is a list: 0 OFF, 1 ON (old presets keep their 0 or 1), 2 REPLACE (free timing, like OFF),
- * 3 ON+REPL (snapped to steps, like ON). Every stock read of Step Mode goes through stepmode_snap / stepmode_snap_get,
- * which hand the stock code "ON" for 1 and 3 and "OFF" for 0 and 2. In both replace modes, while recording:
+ * 3 ON+REPL (snapped to steps, like ON). Every stock read of Step Mode goes through stepmode_snap / stepmode_snap_get
+ * (app) or rpl_snap_r3 / rpl_snap_fp (engine's copy, change handler), which hand the stock code "ON" for 1 and 3 and
+ * "OFF" for 0 and 2. Step Mode decides the unit of note times (steps x 960, or clock ticks), so every reader has to
+ * agree. In both replace modes, while recording:
  *  - a note deletes every older note starting in the same step (any pitch) as soon as it is played;
  *  - when it is released, every older note starting inside its length is deleted too;
  *  - a note still held when the loop wraps is cut at the loop end, and continues as a new note from the loop start
