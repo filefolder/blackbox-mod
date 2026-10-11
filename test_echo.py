@@ -100,7 +100,7 @@ check("patched: a note the Blackbox plays itself still goes to USB", usb == ["90
 mod.usb_in([0x91, 48, 70])
 mod.block()
 usb, _ = mod.send([0x90, 48, 70])
-check("patched: same note on another channel is not an echo", usb == ["903046"], usb)
+check("patched: the same note re-sent on another channel (a sequence cell's own channel) is an echo", usb == [], usb)
 usb, _ = mod.send([0x91, 48, 127])
 check("patched: same channel and note with a different velocity is an echo", usb == [], usb)
 
