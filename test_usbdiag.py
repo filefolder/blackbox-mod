@@ -137,7 +137,7 @@ sof(200)
 check("200 ms of NAKs with the channel enabled: no recovery, no extra events", dg(8) == 0 and posts == [], (dg(8), posts))
 lbl = label()
 check("label shows the state: 3.1.U01 423 00 0 (1 transfer, waiting, notready, nak)", lbl == "3.1.U01 423 00 0", lbl)
-check("label goes back to the version once the device stops reporting", label().startswith("3.1.n"), label())
+check("with no device reporting, the label says so (the build is visibly running)", label() == "3.1.U nodev", label())
 
 # --- babble: channel halted for good, URB never DONE
 set_in(urb=2, state=7, enabled=False)

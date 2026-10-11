@@ -169,17 +169,25 @@ void usbdiag_rxdone(uint8_t *phost)
     fw_rxdone(phost);
 }
 
-/* For cpu.c: the label text while a USB MIDI device is attached; 0 = none, show the CPU meter. At most 16 chars. */
+/* For cpu.c: the label text when this patchset is installed ("3.1.U nodev" while no USB MIDI device is running);
+ * 0 = not installed, show the CPU meter. At most 16 chars. */
 int usbdiag_compose(char *buf)
 {
-    ensure();
-    if (!DG->attached)
+    /* Installed? (the usbdiag patchset points the class table's SOFProcess here; cpu.c links this either way) */
+    if (*(const volatile uint32_t *)0x080F1E30u != ((uint32_t)usbdiag_sof | 1u))
         return 0;
-    unsigned r = DG->rx_done % 100;
+    ensure();
     char *p = buf;
     const char *v = "3.1.U";
     while (*v)
         *p++ = *v++;
+    if (!DG->attached) {
+        for (const char *s = " nodev"; *s;)
+            *p++ = *s++;
+        *p = 0;
+        return 1;
+    }
+    unsigned r = DG->rx_done % 100;
     *p++ = (char)('0' + r / 10);
     *p++ = (char)('0' + r % 10);
     *p++ = ' ';
