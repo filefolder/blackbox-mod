@@ -190,6 +190,14 @@ c = knob("prk_length", -5 * CPS)
 check("top-right far down: every note down to 1 step, not below", edits() == {1001: 1, 1002: 1, 1003: 1, 1004: 1},
       edits())
 
+# --- a note left past the loop end (Step Count made shorter) is not pulled into the loop
+setup()
+e.call("prk_reload_hl", widget(0), 1, V, 0)
+stepper(START, 10)                                # loop now 10 steps: the note on step 13 is past its end
+c = knob("prk_start", CPS)
+check("bottom-left with a note past the loop end: it stays, the others move (and wrap at the new end)",
+      edits() == {1001: 1, 1002: 5, 1003: 9} and 1004 not in edits(), edits())
+
 # --- box selection: only the boxed notes move
 setup(boxed=(1003, 1004))
 e.call("prk_reload_hl", widget(0), 1, V, 0)        # opened: nothing current

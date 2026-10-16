@@ -243,14 +243,19 @@ static void shift(uint8_t *v, int d, int k, int boxed)
         for (int j = 0; j < m; j++)
             set_note(v, cells[j], F_PITCH, rd32(cells[j] + CELL_PITCH) + d);
     } else if (k == 1) {
-        /* time: wraps around the pattern */
+        /* time: wraps around the pattern. Notes that start at or past the loop end (left over from a longer Step
+           Count) stay where they are, so they are back in place if the pattern is made longer again. */
         int count = rd32(v + V_START_STEP + 0x10);
         for (int j = 0; j < m; j++) {
             if (fine == 1) {
-                int32_t s = rd32(cells[j] + CELL_START) + d;
+                int32_t s0 = rd32(cells[j] + CELL_START), s = s0 + d;
+                if (count > 0 && s0 >= count)
+                    continue;
                 set_note(v, cells[j], F_START_STEPS, count > 0 ? mod(s, count) : (s < 0 ? 0 : s));
             } else {
-                int32_t t = rd32(cells[j] + CELL_START_T) + d * fine;
+                int32_t t0 = rd32(cells[j] + CELL_START_T), t = t0 + d * fine;
+                if (count > 0 && t0 >= count * fine)
+                    continue;
                 set_note(v, cells[j], F_START_TICKS, count > 0 ? mod(t, count * fine) : (t < 0 ? 0 : t));
             }
         }
