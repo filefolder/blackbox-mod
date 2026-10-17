@@ -56,7 +56,9 @@ struct usbrecover {
     uint16_t idle_ms;            /* frames the IN channel has sat disabled without DONE */
     uint8_t kick_rx, kick_tx;
 };
-#define UR ((volatile struct usbrecover *)0x38800e00u)    /* backup SRAM, after echo.c's 0x38800c00..0x38800d0c */
+/* backup SRAM: after od.c's filter states (0x38800000..0x38800384), before comp.c's at 0x38800400 */
+#define UR ((volatile struct usbrecover *)0x388003c0u)
+_Static_assert(sizeof(struct usbrecover) <= 0x400 - 0x3c0, "usbrecover state runs into comp.c's");
 #define MAGIC 0x55535231u        /* "USR1" */
 
 static void ensure(void)

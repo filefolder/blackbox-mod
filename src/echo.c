@@ -43,7 +43,7 @@ typedef void (*send_fn)(uint8_t *mgr, const struct midi_msg *m, int din, int usb
 
 #define PORT_USB    1
 #define ECHO_BLOCKS 6            /* blocks of 256 frames: ~32 ms at 48 kHz */
-#define ENTRIES     32
+#define ENTRIES     24           /* sized to the backup SRAM gap it lives in */
 
 void bkp_enable(void);
 
@@ -52,13 +52,16 @@ struct echo_state {
     uint32_t block;              /* audio blocks seen */
     uint32_t next;               /* ring position for the next remembered message */
     struct {
-        uint32_t block;
+        uint16_t block;          /* low 16 bits of the block count: ages are compared mod 65536 */
         uint8_t key[3];          /* kind | channel, data 1, data 2 (CC only) */
         uint8_t live;
     } e[ENTRIES];
 };
-#define ES ((volatile struct echo_state *)0x38800c00u)   /* backup SRAM, after munchi.cpp's 0x38800b14 */
-#define MAGIC 0x45434831u        /* "ECH1" */
+/* backup SRAM: after comp.c's state (0x38800400..0x38800654), before seqfix.c's at 0x38800700. (0x38800b20 on is
+   upstream's VHS delay line, so nothing of ours goes there.) */
+#define ES ((volatile struct echo_state *)0x38800658u)
+_Static_assert(sizeof(struct echo_state) <= 0x700 - 0x658, "echo state runs into seqfix.c's");
+#define MAGIC 0x45434832u        /* "ECH2": bumped with the layout */
 
 static void ensure(void)
 {
@@ -110,7 +113,7 @@ int echo_read(uint8_t *mgr, struct midi_msg *out, uint8_t *port)
         ensure();
         unsigned i = ES->next % ENTRIES;
         ES->next = i + 1;
-        ES->e[i].block = ES->block;
+        ES->e[i].block = (uint16_t)ES->block;
         ES->e[i].key[0] = key[0];
         ES->e[i].key[1] = key[1];
         ES->e[i].key[2] = key[2];
@@ -129,7 +132,7 @@ void echo_send(uint8_t *mgr, const struct midi_msg *m, int din, int usb)
         for (int i = 0; i < ENTRIES; i++) {
             if (!ES->e[i].live)
                 continue;
-            if (ES->block - ES->e[i].block > ECHO_BLOCKS) {
+            if ((uint16_t)(ES->block - ES->e[i].block) > ECHO_BLOCKS) {
                 ES->e[i].live = 0;                               /* too old to be an echo */
                 continue;
             }

@@ -15,7 +15,7 @@ from emu import Emu
 IMAGE = "out/solo+slice+duck+chord+cond+filter+cpu+od+comp+seqfix+fx2+munchi+usbmidi+usbrecover+cave/BLACKBOX.bin"
 PH, CLS, C, HCD, CORE, RXBUF, MGR = 0x24050000, 0x24051000, 0x24051100, 0x24052000, 0x24061000, 0x24009710, 0x24002E88
 IN, OUT = 1, 2
-DG = 0x38800E00
+DG = 0x388003C0
 
 e = Emu(IMAGE, "out/cave.elf")
 e.uc.mem_map(0x38800000, 0x1000)
