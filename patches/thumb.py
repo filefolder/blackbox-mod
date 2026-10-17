@@ -18,6 +18,12 @@ def bl(at, target):
     return struct.pack("<HH", h1, h2)
 
 
+def bw(at, target):
+    """B.W (a tail call) from `at` to Thumb function `target`: BL's encoding with bit 14 of the second half clear."""
+    h1, h2 = struct.unpack("<HH", bl(at, target))
+    return struct.pack("<HH", h1, h2 & ~0x4000)
+
+
 def word(v):
     return struct.pack("<I", v)
 

@@ -10,11 +10,11 @@ import math
 import struct
 import sys
 
-from unicorn.arm_const import UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R6, UC_ARM_REG_S0, UC_ARM_REG_SP
+from unicorn.arm_const import UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R4, UC_ARM_REG_R6, UC_ARM_REG_S0, UC_ARM_REG_S1, UC_ARM_REG_SP
 
 from emu import STACK, Emu
 
-e = Emu("out/solo+slice+duck+chord+cond+filter+cpu+od+comp+seqfix+fx2+munchi+cave/BLACKBOX.bin", "out/cave.elf")
+e = Emu("out/solo+slice+duck+chord+cond+filter+cpu+od+comp+seqfix+fx2+munchi+master+cave/BLACKBOX.bin", "out/cave.elf")
 
 OBJ, PARAMS, PAD, BUF, LBUF, RBUF = 0x24060000, 0x24061000, 0x24062000, 0x24063000, 0x24064000, 0x24066000
 N = 64
@@ -60,12 +60,12 @@ def setup(knob, res=0.0, interp=0):
     set_interp(interp)
 
 
-def run(left, right=None, pad=PAD, silent=False):
+def run(left, right=None, pad=PAD, silent=False, sample_voice=0):
     e.uc.mem_write(LBUF, struct.pack(f"<{len(left)}f", *left))
     if right is not None:
         e.uc.mem_write(RBUF, struct.pack(f"<{len(right)}f", *right))
     e.uc.mem_write(BUF, struct.pack("<IIIIBB", len(left), len(left), LBUF, RBUF if right is not None else 0, int(silent), int(right is not None)))
-    e.call("filter_process", OBJ, BUF, pad)
+    e.call("filter_process", OBJ, BUF, pad, sample_voice, count=20_000_000)
     l = list(struct.unpack(f"<{len(left)}f", e.uc.mem_read(LBUF, 4 * len(left))))
     r = list(struct.unpack(f"<{len(right)}f", e.uc.mem_read(RBUF, 4 * len(right)))) if right is not None else None
     return l, r
@@ -246,7 +246,7 @@ check("stereo: left matches the mono run, right is filtered on its own", max(abs
 
 # --- crunch
 reset()
-setup(0.0, interp=7 + 1)                       # 12k
+setup(0.0, interp=9 + 1)                       # 12k
 x = sine(997, n=N)
 l, _ = run(x)
 runs, k = [], 0
@@ -259,7 +259,7 @@ while k < N:
 check("12k: output holds each value for 4 samples (48k / 12k)", all(v == 4 for v in runs[1:-1]), runs)
 check("12k: held values are 12-bit (multiples of 1/2048)", all(abs(v * 2048 - round(v * 2048)) < 1e-3 for v in l))
 reset()
-setup(0.0, interp=7 + 2)                       # 10k: non-integer ratio
+setup(0.0, interp=9 + 2)                       # 10k: non-integer ratio
 l, _ = run([0.9 * i / N for i in range(N)])    # a ramp, so every held value differs
 runs, k = [], 0
 while k < N:
@@ -270,7 +270,7 @@ while k < N:
     k = j
 check("10k: holds alternate 4 and 5 samples (average 4.8)", set(runs[1:-1]) <= {4, 5} and abs(N / len(runs) - 4.8) < 0.6, runs)
 reset()
-setup(0.0, interp=7 + 5)                       # 4k
+setup(0.0, interp=9 + 5)                       # 4k
 a, _ = run(sine(997, n=N))
 b, _ = run(sine(997, n=N, start=N))
 joined = a + b
@@ -283,26 +283,26 @@ while k < 2 * N:
     k = j
 check("4k: holds 12 samples, continuing across the block boundary", all(v == 12 for v in runs[1:-1]), runs)
 reset()
-setup(0.0, interp=7 + 1)
+setup(0.0, interp=9 + 1)
 l, _ = run(sine(997), pad=0)
 check("no Interp location passed: no crunch", all(abs(p - q) < 1e-7 for p, q in zip(l, sine(997))))
-for v, name in ((0, "Normal"), (1, "HighQ"), (14, "a value past the list")):
+for v, name in ((0, "Normal"), (1, "HighQ"), (16, "a value past the list")):
     reset()
     setup(0.0, interp=v)
     l, _ = run(sine(997))
     check(f"Interp {name}: no crunch", all(abs(p - q) < 1e-7 for p, q in zip(l, sine(997))))
 reset()
-setup(-0.6, 0.0, interp=7 + 3)                 # 8k into the low-pass
+setup(-0.6, 0.0, interp=9 + 3)                 # 8k into the low-pass
 l, _ = run(sine(997))
 check("crunch and filter together: crunched, then low-passed (no longer stair-stepped)", len(set(l)) > N // 2)
 reset()
 setup(-0.6, 0.3)
 l, _ = run(sine(997))
-check("state from an older build (magic SVF1) is reinitialised, not reused", e.r32(OBJ + 4) == 0x53564632)
+check("state from an older build (magic SVF1 / SVF2) is reinitialised, not reused", e.r32(OBJ + 4) == 0x53564633)
 
 # --- call sites
 reset()
-setup(0.0, interp=7 + 1)
+setup(0.0, interp=9 + 1)
 e.uc.mem_write(LBUF, struct.pack(f"<{N}f", *sine(997)))
 e.uc.mem_write(BUF, struct.pack("<IIIIBB", N, N, LBUF, 0, 0, 0))
 e.uc.reg_write(UC_ARM_REG_R6, PAD)
@@ -311,23 +311,33 @@ l = struct.unpack(f"<{N}f", e.uc.mem_read(LBUF, 4 * N))
 check("sample-pad call site passes its pad (r6): crunch applies", len(set(l)) <= N // 4 + 1)
 e.uc.mem_write(LBUF, struct.pack(f"<{N}f", *sine(997)))
 e.uc.mem_write(BUF, struct.pack("<IIIIBB", N, N, LBUF, 0, 0, 0))
-CPAD = OBJ - 0x3AC                              # class B: the filter object sits at pad + 0x3ac
+CPAD = 0x24050000                               # class B: the pad is in r6 at the call (3.1.U; it was object - 0x3ac)
 e.w32(CPAD + 0x18, 3 << 8 | 0)
 set_interp(0, row=3, col=0)
+e.uc.reg_write(UC_ARM_REG_R6, CPAD)
 e.call("filter_voice_b", OBJ, BUF, PAD)
 l = struct.unpack(f"<{N}f", e.uc.mem_read(LBUF, 4 * N))
 check("clip / slicer call site, Interp Normal in the app's record: no crunch", len(set(l)) > N // 2)
 reset()
-set_interp(7 + 1, row=3, col=0)
+set_interp(9 + 1, row=3, col=0)
 e.uc.mem_write(LBUF, struct.pack(f"<{N}f", *sine(997)))
 e.uc.mem_write(BUF, struct.pack("<IIIIBB", N, N, LBUF, 0, 0, 0))
+e.uc.reg_write(UC_ARM_REG_R6, CPAD)
 e.call("filter_voice_b", OBJ, BUF, PAD)
 l = struct.unpack(f"<{N}f", e.uc.mem_read(LBUF, 4 * N))
-check("clip / slicer call site finds its pad (filter object - 0x3ac) and its Interp (12k): crunch applies", len(set(l)) <= N // 4 + 1)
+check("clip / slicer call site takes its pad from r6 and finds its Interp (12k): crunch applies", len(set(l)) <= N // 4 + 1)
+OBJV = OBJ + 0x700                              # another voice of the same pad: its filter object is somewhere else
+e.w32(OBJV + 0x84, PARAMS)
+e.uc.mem_write(LBUF, struct.pack(f"<{N}f", *sine(997)))
+e.uc.mem_write(BUF, struct.pack("<IIIIBB", N, N, LBUF, 0, 0, 0))
+e.uc.reg_write(UC_ARM_REG_R6, CPAD)
+e.call("filter_voice_b", OBJV, BUF, PAD)
+l = struct.unpack(f"<{N}f", e.uc.mem_read(LBUF, 4 * N))
+check("  a second voice of the same clip / slicer pad gets the pad's Fidelity too (3.1.d - T: only the first did)", len(set(l)) <= N // 4 + 1)
 
-# --- the engine resetting its own copy of Interp does not stop the crunch (his 3.1.f report)
+# --- the engine resetting its own copy of Interp does not stop the crunch (the 3.1.f report)
 reset()
-setup(0.0, interp=7 + 1)
+setup(0.0, interp=9 + 1)
 e.w32(PAD + 0x578, 0)
 l, _ = run(sine(997))
 check("engine copy reset to Normal, app record still 12k: crunch keeps going", len(set(l)) <= N // 4 + 1)
@@ -335,7 +345,7 @@ set_interp(1)
 l, _ = run(sine(997))
 check("app record set to HighQ: crunch stops", len(set(l)) > N // 2)
 e.w32(PAD + 0x18, 7 << 8 | 0)
-set_interp(7 + 1)
+set_interp(9 + 1)
 l, _ = run(sine(997))
 check("a pad id outside the 4x4 grid reads as Normal (no stray lookups)", len(set(l)) > N // 2)
 
@@ -351,7 +361,7 @@ def page(addr):
     return ids
 
 
-check("Sample pad page: Saturation, Interp, then the rest", page(0x080EFD38) == [0xDB, 0xF1, 0x93, 0x95, 0x62, 0xA0, 0xC4, 0x6A, 0xD0, 0xF5], [hex(v) for v in page(0x080EFD38)])
+check("Sample pad page: Saturation, Fidelity, then the rest", page(0x080EFD38) == [0xDB, 0xF1, 0x93, 0x95, 0x62, 0xA0, 0xC4, 0x6A, 0xD0, 0xF5], [hex(v) for v in page(0x080EFD38)])
 check("Multisample pad page: same", page(0x080EFBD0) == [0xDB, 0xF1, 0x93, 0x95, 0x62, 0xA0, 0xF5, 0xC4, 0x6A], [hex(v) for v in page(0x080EFBD0)])
 check("Slicer pad page: same (Interp added)", page(0x080EF900) == [0xDB, 0xF1, 0x93, 0x95, 0x62, 0xC4, 0xA1, 0x6A, 0xF5], [hex(v) for v in page(0x080EF900)])
 check("Clip pad page: same (Interp added)", page(0x080EFA68) == [0xDB, 0xF1, 0x93, 0x95, 0x62, 0xC4, 0xA1, 0x6A, 0xF5], [hex(v) for v in page(0x080EFA68)])
@@ -363,7 +373,7 @@ e.w32(STACK, 2)
 e.w32(STACK + 4, 0x080CC794)
 e.call("interp_register", 0x24001000, 0xF1, 0, 0x080EB7E0)
 names = [e.cstr(e.r32(seen["names"] + 4 * i)) for i in range(seen["count"])]
-check("Fidelity list: Normal, HighQ, SP1200, SP-12, S950, MPC60, SP Raw, 16k .. 2k", names == ["Normal", "HighQ", "SP1200", "SP-12", "S950", "MPC60", "SP Raw", "16k", "12k", "10k", "8k", "6k", "4k", "2k"] and seen["param"] == 0xF1, names)
+check("Fidelity list: the machines together (SP 45 beside S950 Lo, requested for 3.2.b), then the plain crunches 16k .. 2k", names == ["Normal", "HighQ", "SP1200", "SP-12", "S950", "MPC60", "SP Raw", "S950 Lo", "SP 45", "16k", "12k", "10k", "8k", "6k", "4k", "2k"] and seen["param"] == 0xF1, names)
 
 check("label reads 'Fidelity:', xml name stays 'interpqual'", seen["label"] == "Fidelity:" and seen["xml"] == "interpqual", (seen["label"], seen["xml"]))
 
@@ -386,23 +396,185 @@ setup(0.0, interp=2)                              # SP1200
 blocks = [run(sine(997, start=b * N))[0] for b in range(4)]
 first = blocks[0]
 check("SP1200 output: finite after stale stock words in the state area", all(math.isfinite(v) for v in first))
-hz = [0.0] * 0
-setup(0.0, interp=4)                             # S950: no hold, so the output filter alone sees the tone
-reset()
-e.uc.mem_write(OBJ + 0x60, bytes(0x14))
-l = []
+
+# --- 3.1.T: the S950 modes' output side. The low-pass is src/s950.c, also compiled for the Mac (host/libdsp.dylib):
+# the ARM build here must give what the Mac build gives.
+import ctypes
+
+import numpy as np
+
+host = ctypes.CDLL("host/libdsp.dylib")
+FP = ctypes.POINTER(ctypes.c_float)
+host.s950_filter_count.argtypes = [ctypes.c_float, ctypes.c_uint]
+host.s950_filter_count.restype = ctypes.c_uint
+host.s950_filter.argtypes = [FP, ctypes.POINTER(FP), ctypes.c_int, ctypes.c_uint]
+
+
+class HostFilter:
+    def __init__(self):
+        self.z = np.zeros(12, np.float32)
+
+    def run(self, x, count):
+        blk = np.array(x, np.float32)
+        host.s950_filter(self.z.ctypes.data_as(FP), (FP * 2)(blk.ctypes.data_as(FP), None), len(blk), count)
+        return [float(v) for v in blk]
+
+
+def q12(x):
+    return [round(v * 2048) / 2048 for v in x]
+
+
+e.uc.mem_map(0x38800000, 0x1000)                 # backup SRAM: master.c keeps the SDRAM block's address there
+e.uc.mem_map(0x58024000, 0x1000)
+e.uc.mem_map(0xC0000000, 0x90000)
+SDRAM, BANK = 0xC0000000, 0xC0000000 + 0x56800 + 0x7000
+
+
+def sdram(on=True):
+    e.w32(0x38800F70, SDRAM if on else 0)
+    e.w32(0x38800F74, SDRAM ^ 0x5052534D)
+
+
+def fresh():
+    """a filter object as after boot: stale words in its own state, no slot in the bank"""
+    reset()
+    e.w32(BANK + 4, 0)
+
+
+def tone(hz, b, amp=0.4):
+    return [amp * math.sin(2 * math.pi * hz * (b * N + i) / 48000) for i in range(N)]
+
+
+def err(a, b):
+    return max(abs(p - q) for p, q in zip(a, b))
+
+
+sdram()
+check("the filter's count: 0.4 x the voice clock, never under 5 (16 kHz), from the OS's table",
+      [host.s950_filter_count(c, 168) for c in (96000, 48000, 40000, 31250, 24000, 12000, 4000)] == [5, 5, 5, 6, 8, 16, 50]
+      and host.s950_filter_count(48000, 132) == 36 and host.s950_filter_count(48000, 98) == 255,
+      [host.s950_filter_count(c, 168) for c in (96000, 48000, 40000, 31250, 24000, 12000, 4000)])
+
+# clip / slicer voice (no reader): 12 bits here, then the 16 kHz low-pass
+setup(0.0, interp=4)
+fresh()
+e.uc.mem_write(OBJ + 0x60, b"\xa5" * 0x14)        # stale stock words where the output stage keeps its state
+hf, worst = HostFilter(), 0.0
+for b in range(6):
+    x = tone(3000, b)
+    worst = max(worst, err(run(x)[0], hf.run(q12(x), 5)))
+check(f"S950 on a clip / slicer voice: 12 bits, then the Mac build's 16 kHz low-pass, six blocks (max diff {worst:.1e})", worst < 2e-5, worst)
+check("  its state is the bank's first slot, keyed by the filter object", e.r32(BANK) == 0x53393530 and e.r32(BANK + 4) == 1
+      and e.r32(BANK + 8) == OBJ and e.r32(OBJ + 0x64) == 0)
+l, dry = [], []
 for b in range(8):
-    l += run([0.4 * math.sin(2 * math.pi * 20000 * (b * N + i) / 48000) for i in range(N)])[0]
-setup(0.0, interp=0)
-reset()
-dry = []
+    l += run(tone(20000, b))[0]
+    dry += tone(20000, b)
+att = 20 * math.log10(rms(l[2 * N:]) / rms(dry[2 * N:]))
+check(f"S950: a 20 kHz tone comes out {att:.1f} dB (the chip: -11.9 dB, and the DAC's hold takes about 2 more)", -17 < att < -11, att)
+l, dry = [], []
 for b in range(8):
-    dry += run([0.4 * math.sin(2 * math.pi * 20000 * (b * N + i) / 48000) for i in range(N)])[0]
-check(f"machine output filter: a 20 kHz tone through S950's 13.5 kHz stage comes out {20 * math.log10(rms(l[N:]) / rms(dry[N:])):.1f} dB", rms(l[N:]) < 0.5 * rms(dry[N:]))
-setup(0.0, interp=4)                             # S950: no fixed hold, 12-bit only
+    l += run(tone(1000, b))[0]
+    dry += tone(1000, b)
+check(f"S950: 1 kHz passes at {20 * math.log10(rms(l[2 * N:]) / rms(dry[2 * N:])):+.2f} dB", abs(rms(l[2 * N:]) / rms(dry[2 * N:]) - 1) < 0.01)
+
+# sample-pad voice: the reader did the 12 bits and left the rate at object + 0x60; the filter follows the clock
+fresh()
+e.uc.mem_write(OBJ + 0x60, struct.pack("<f", -0.5))        # an octave down, reversed
+hf, worst, smooth = HostFilter(), 0.0, []
+for b in range(6):
+    x = tone(3000, b, amp=0.31234)
+    y = run(x, sample_voice=1)[0]
+    worst = max(worst, err(y, hf.run(x, 8)))
+    smooth += y
+check(f"S950 on a sample-pad voice an octave down: no second rounding, low-pass at 10 kHz = 0.4 x 24 kHz (max diff {worst:.1e})",
+      worst < 2e-5, worst)
+fresh()
+e.uc.mem_write(OBJ + 0x60, struct.pack("<f", float("nan")))
+hf, worst = HostFilter(), 0.0
+for b in range(3):
+    x = tone(3000, b)
+    worst = max(worst, err(run(x, sample_voice=1)[0], hf.run(q12(x), 5)))
+check("  a rate that is not a number is ignored: treated as a voice without a reader", worst < 2e-5, worst)
+
+# S950 Lo on a clip / slicer voice: the 31.25 kHz hold stands in for the missing reader, low-pass at 13.3 kHz
+setup(0.0, interp=7)
+fresh()
+hf, worst = HostFilter(), 0.0
+ph, held, one = np.float32(0.0), 0.0, np.float32(1.0)
+for b in range(6):
+    x, h = tone(2000, b), []
+    for v in x:
+        ph = np.float32(ph + np.float32(31250.0) / np.float32(48000.0))     # single precision, as on the chip
+        if ph >= one:
+            ph = np.float32(ph - one)
+            held = round(v * 2048) / 2048
+        h.append(held)
+    worst = max(worst, err(run(x)[0], hf.run(h, 6)))
+check(f"S950 Lo on a clip / slicer voice: 31.25 kHz hold + 12 bits, then the low-pass at 13.3 kHz (max diff {worst:.1e})", worst < 2e-5, worst)
+
+# a second filter object gets its own slot; the first keeps its own
+setup(0.0, interp=4)
+fresh()
+run(tone(3000, 0))
+OBJ2 = OBJ + 0x800
+e.w32(OBJ2 + 0x84, PARAMS)
+setup(0.0, interp=4)
+e.uc.mem_write(LBUF, struct.pack(f"<{N}f", *tone(3000, 0)))
+e.uc.mem_write(BUF, struct.pack("<IIIIBB", N, N, LBUF, 0, 0, 0))
+e.call("filter_process", OBJ2, BUF, PAD, 0, count=20_000_000)
+check("a second voice takes the next slot", e.r32(BANK + 4) == 2 and e.r32(BANK + 8 + 52) == OBJ2 and e.r32(OBJ2 + 0x64) == 1)
+
+# back and forth between modes: the SP stage reads the slot number as (almost) zero, and S950 finds its slot again
+setup(0.0, interp=2)
+l = run(tone(997, 0))[0]
+check("S950 -> SP1200 on the same voice: no jump (the slot number reads as zero state)", max(abs(v) for v in l) < 0.5)
+setup(0.0, interp=4)
+l = run(tone(997, 1))[0]
+check("SP1200 -> S950: the voice's own slot again, started clean", e.r32(BANK + 4) == 2 and e.r32(OBJ + 0x64) == 0
+      and all(math.isfinite(v) for v in l) and max(abs(v) for v in l) < 0.5)
+
+# no SDRAM block (the boot hook did not run): 12 bits, no low-pass, no crash
+sdram(False)
 reset()
-l = run(sine(997))[0]
-check("S950 output: no fixed-rate hold (variable-rate DAC), values still 12-bit", max(runs_of(l)) <= 2)
+x = tone(3000, 0)
+check("no SDRAM block: the voice goes without the low-pass", err(run(x)[0], q12(x)) < 1e-6)
+sdram()
+
+# the bank full: voice 257 goes without, nothing is overwritten
+e.w32(BANK + 4, 256)
+e.w32(BANK + 8 + 255 * 52, 0x24012340)
+OBJ3 = OBJ + 0x1000
+e.w32(OBJ3 + 0x84, PARAMS)
+e.uc.mem_write(LBUF, struct.pack(f"<{N}f", *x))
+e.uc.mem_write(BUF, struct.pack("<IIIIBB", N, N, LBUF, 0, 0, 0))
+e.call("filter_process", OBJ3, BUF, PAD, 0, count=20_000_000)
+check("bank full: no slot, no low-pass, the bank untouched", e.r32(BANK + 4) == 256 and e.r32(BANK + 8 + 255 * 52) == 0x24012340
+      and err(struct.unpack(f"<{N}f", e.uc.mem_read(LBUF, 4 * N)), q12(x)) < 1e-6)
+e.w32(BANK + 4, 2)
+
+# the reader's call sites note the rate in the voice
+VOICE = 0x24068000
+e.stub(e.sym["voice_read"] & ~1, value=1)
+e.uc.reg_write(UC_ARM_REG_R4, VOICE)
+e.uc.reg_write(UC_ARM_REG_S1, struct.unpack("<I", struct.pack("<f", 0.7071))[0])
+e.call("voice_read_a", 0, 0)
+check("voice_read_a: the rate lands at voice + 0xa8 + 0x60 (the filter object's output-stage rate)",
+      abs(struct.unpack("<f", e.uc.mem_read(VOICE + 0xA8 + 0x60, 4))[0] - 0.7071) < 1e-6)
+del e.stubs[e.sym["voice_read"] & ~1]
+e.uc.reg_write(UC_ARM_REG_R4, 0)
+
+setup(0.0, interp=4)
+reset()
+e.uc.mem_write(LBUF, struct.pack(f"<{N}f", *tone(3000, 0)))
+e.uc.mem_write(BUF, struct.pack("<IIIIBB", N, N, LBUF, 0, 0, 0))
+count = [0]
+h = e.uc.hook_add(1 << 2, lambda uc, a, sz, _: count.__setitem__(0, count[0] + 1))     # UC_HOOK_CODE
+e.call("filter_process", OBJ, BUF, PAD, 1, count=20_000_000)
+e.uc.hook_del(h)
+print(f"     S950 output stage: {count[0]} instructions per 64-frame mono block")
+setup(0.0, interp=2)
+reset()
 
 # --- 3.1.n: SP Raw = SP1200 without the output filter; Saturation = input drive in machine modes
 def hold_model(x, rate=26040.0):

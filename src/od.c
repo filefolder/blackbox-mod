@@ -146,9 +146,9 @@ int pad_machine_mode(const uint8_t *pad);       /* filter.c */
  * make-up gain only, as with the overdrive off. (Clip / slicer pads keep od_process: their object's link to the pad is
  * not mapped yet.)
  */
-void od_process_a(const uint8_t *obj, float *left, float *right, int n)
+static void od_aside(const uint8_t *obj, const uint8_t *pad, float *left, float *right, int n)
 {
-    if (obj && pad_machine_mode(obj - 0x560)) {
+    if (obj && pad_machine_mode(pad)) {
         float makeup = *(const float *)(obj + OD_MAKEUP);
         if (makeup != 1.0f)
             for (int i = 0; i < n; i++) {
@@ -159,4 +159,16 @@ void od_process_a(const uint8_t *obj, float *left, float *right, int n)
         return;
     }
     od_process(obj, left, right, n);
+}
+
+/* sample pads (@0x08059ab6): the overdrive object is the pad + 0x560 */
+void od_process_a(const uint8_t *obj, float *left, float *right, int n)
+{
+    od_aside(obj, obj - 0x560, left, right, n);
+}
+
+/* clip / slicer pads (@0x08068b12, 3.1.U): the pad + 0xb8c (FUN_08067fa4: addw r3, r4, #0xb8c with r4 the pad) */
+void od_process_b(const uint8_t *obj, float *left, float *right, int n)
+{
+    od_aside(obj, obj - 0xb8c, left, right, n);
 }

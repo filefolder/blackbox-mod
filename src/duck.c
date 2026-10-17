@@ -60,7 +60,8 @@ struct duck_state {
     uint32_t last;                 /* engine sample clock at the previous tick */
     uint8_t trig;                  /* set by the voice-start thunk (offset 8, see duck_thunk.S) */
     uint8_t stage[SOURCES];
-    uint8_t pad[3];
+    uint8_t spare;
+    uint16_t trigs;                /* offset 14: a bit per pad (row * 4 + col), set by the voice-start thunk; lfo.c reads it */
     float value[SOURCES];
     float timer[SOURCES];          /* ms elapsed in the hold or release stage */
 };
@@ -68,6 +69,8 @@ struct duck_state {
 #define MAGIC 0x4455434cu          /* "DUCL": bumped when the state layout or meaning changes */
 
 /* Replaces the call to the engine's control tick (FUN_08053164). */
+void lfo_tick(uint32_t now);
+
 int duck_block(uint8_t *engine, void *a, void *b)
 {
     uint32_t now = *(uint32_t *)engine;          /* low word of the 64-bit sample clock */
@@ -78,6 +81,7 @@ int duck_block(uint8_t *engine, void *a, void *b)
             D->timer[i] = 0.0f;
         }
         D->trig = 0;
+        D->trigs = 0;
         D->last = now;
         D->magic = MAGIC;
     }
@@ -122,18 +126,28 @@ int duck_block(uint8_t *engine, void *a, void *b)
         D->timer[i] = timer;
         *(float *)(engine + value_off[i]) = v;
     }
+    lfo_tick(now);
     return fw_process(engine, a, b);
 }
 
-/* Source list for pad modulation (param 0x53): the eight stock entries plus the four duck sources. */
-const char *const duck_source_names[12] = {
+/*
+ * Source list for pad modulation (param 0x53): the eight stock entries plus ours.
+ * KEY (3.1.W) is stock's own per-note source, code 0xe, "key" in the preset format: the engine attaches it on both
+ * pad classes (FUN_0805623c: voice + 0x8c; FUN_08067018 case 0xe) but the menu never offered it. Its value is
+ * (note - 60) / 60, set when the voice starts (FUN_08058548): 0 at middle C, 0.2 per octave, either side.
+ */
+const char *const duck_source_names[16] = {
     (const char *)0x080cea68, /* none */ (const char *)0x080cea94, /* VEL  */
-    (const char *)0x080ce644, /* LFO  */ (const char *)0x080cea70, /* PTCH */
+    "KEY",
+    (const char *)0x080ce644, /* LFO  */ "LFO2", "LFO3",       /* lfo.c */
+    (const char *)0x080cea70, /* PTCH */
     (const char *)0x080cea78, /* MODW */ (const char *)0x080cea80, /* MVOL */
     (const char *)0x080cea88, /* MPAN */ (const char *)0x080cea90, /* CC   */
+    "ENV",                                       /* envmod.c: the pad's ADSR; ahead of the duck shapes (by request) */
     "EXP1", "EXP2", "PUMP", "LINR",
 };
-const uint16_t duck_source_codes[12] = {
-    0, 0xd, 4, 0x19, 0x1a, 0x1c, 0x1d, 0x8000,   /* stock */
+const uint16_t duck_source_codes[16] = {
+    0, 0xd, 0xe, 4, 5, 6, 0x19, 0x1a, 0x1c, 0x1d, 0x8000,   /* stock, with key after velocity, lfo2 / lfo3 after the LFO */
+    1,                                           /* env1 */
     0x12, 0x11, 0x10, 0xf,                       /* mod4, mod3, mod2, mod1 */
 };

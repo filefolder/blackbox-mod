@@ -1,4 +1,4 @@
-"""Audio CPU meter on the version label(s): "3.1.x avg/peak%" (see src/cpu.c). Apply together with `cave`."""
+"""Audio CPU meter in the middle label of the Tools bar: "avg/peak%" (see src/cpu.c). Apply together with `cave`."""
 import os
 
 from thumb import ROOT, bl, symbols
@@ -17,8 +17,6 @@ PATCHES = [
     # 6 bytes of "3.1.x" become: mov r0, r2; bl cpu_name; nop; nop
     (0x0809AD84, bytes.fromhex("6a4b18681060 9b889380".replace(" ", "")),
      bytes.fromhex("1046") + bl(0x0809AD86, sym["cpu_name"]) + bytes.fromhex("00bf00bf")),
-    # screen constructors: the three calls that put the version text on a label
-    hook(0x080C54F8, 0x080A3DEC, "cpu_label_a"),
-    hook(0x080AEAB6, 0x080C3B98, "cpu_text_b"),
-    hook(0x080C72A4, 0x080C3B98, "cpu_text_c"),
+    # Tools refresh: where it sets the free-space label, also put the load in the empty label beside it
+    hook(0x080C52A4, 0x080A3DEC, "cpu_tools"),
 ]

@@ -14,9 +14,10 @@ from unicorn.arm_const import UC_ARM_REG_SP
 
 from emu import STACK, Emu
 
-e = Emu("out/solo+slice+duck+chord+cond+filter+cpu+od+comp+seqfix+fx2+munchi+cave/BLACKBOX.bin", "out/cave.elf")
+e = Emu("out/solo+slice+duck+chord+cond+filter+cpu+od+comp+seqfix+fx2+munchi+master+cave/BLACKBOX.bin", "out/cave.elf")
 e.uc.mem_map(0x38800000, 0x1000)
 e.uc.mem_map(0x58024000, 0x1000)
+e.uc.mem_map(0x50003000, 0x1000)                       # WWDG1: audio_watch re-arms the early wakeup each block
 e.uc.mem_map(0xC0000000, 0x400000)                     # SDRAM: the delay's lines
 e.uc.mem_map(0x30000000, 0x10000)                      # fake objects
 OBJ, VT, BUFS, CTX, BUS, IN = 0x30000000, 0x30001000, 0x30001100, 0x30001200, 0x30001300, 0x30001400
@@ -97,6 +98,9 @@ def run(seconds, src=lambda t: (0.0, 0.0)):
 
 run.t = 0
 fails = 0
+ENGINE = any("granularDelay" in k for k in e.sym)      # False in a MUNCHI_OFF build (build.sh): Type 1 is "---" = stock delay
+MUNCHI_PAGE = [0x197, 0x38, 0x1D1, 0x1D2, 0x1D3, 0x1D4, 0x1D5, 0x1D6]   # slot 1 is Munchi's own now; Motion is slot 2
+# the motion's own three come from the fill, which this harness's store does not carry (test_motion.py has the real page)
 
 
 def check(label, cond, detail=""):
@@ -116,14 +120,14 @@ e.stub(0x0808C12C, lambda: reg.append(("num", e.arg(1), e.arg(2), e.cstr(e.arg(3
 e.w32(STACK, 2)
 e.call("munchi_register", 0x24001000, 0x197, 0, 0)
 check("registered: Type Delay/Munchi, Wand, Random, Freeze, Clock 1x/1/2x/2x, Width, Duck",
-      reg == [("list", 0x197, "Type:", ["Delay", "Munchi"]), ("num", 0x1D1, 8, "Wand:", 0, 1000), ("num", 0x1D2, 8, "Random:", 0, 1000), ("list", 0x1D3, "Freeze:", ["Off", "On"]),
+      reg[:7] == [("list", 0x197, "Type:", ["Delay", "Munchi", "Motion", "Relapse"] if ENGINE else ["Delay", "---", "Motion", "Relapse"]), ("num", 0x1D1, 8, "Wand:", 0, 1000), ("num", 0x1D2, 8, "Random:", 0, 1000), ("list", 0x1D3, "Freeze:", ["Off", "On"]),
               ("list", 0x1D4, "Clock:", ["1x", "1/2x", "2x"]), ("list", 0x1D5, "Width:", ["TEMPO", "Mono", "Wide", "Huge"]), ("list", 0x1D6, "Duck:", ["Auto", "Off", "Light", "Heavy"])], reg)
 added = []
 e.stub(0x08093EF6, lambda: added.append((e.arg(1), e.arg(2))))
 e.call("munchi_defaults_first", 0x30005000, 0x32, 400)
 e.call("munchi_defaults_last", 0x30005000, 0x35, 1)
 check("delay defaults: Type first; Wand 25 %, Random 30 %, Freeze Off, Clock 1x, Width TEMPO, Duck Auto after Ping",
-      added == [(0x197, 0), (0x32, 400), (0x35, 1), (0x1D1, 250), (0x1D2, 300), (0x1D3, 0), (0x1D4, 0), (0x1D5, 0), (0x1D6, 0)], added)
+      added[:9] == [(0x197, 0), (0x32, 400), (0x35, 1), (0x1D1, 250), (0x1D2, 300), (0x1D3, 0), (0x1D4, 0), (0x1D5, 0), (0x1D6, 0)] , added)
 
 # page list: store with every delay param, the cell's type from its vtable
 e.w32(STORE2, VT2)
@@ -144,8 +148,8 @@ def page(type_, ids=ids, type_id=0x197):
 
 check("Type Delay page: Type + the stock 7 + Delay knob variant (8 slots), no Munchi controls",
       page(0) == [0x197, 0x32, 0x33, 0x38, 0x0E, 0xCA, 0x34, 0xC9, 0x35], [hex(i) for i in page(0)])
-check("Type Munchi page: the 8 slots = Type, Feedback, Wand, Random, Freeze, Clock, Width, Duck",
-      page(1) == [0x197, 0x38, 0x1D1, 0x1D2, 0x1D3, 0x1D4, 0x1D5, 0x1D6], [hex(i) for i in page(1)])
+check("Type Munchi page: the 8 slots = Type, Feedback, Wand, Random, Freeze, Clock, Width, Duck" if ENGINE else
+      "engine left out: the second Type is Motion: the stock delay's controls plus Motion, Rate, Depth", page(1) == MUNCHI_PAGE, [hex(i) for i in page(1)])
 e.uc.mem_write(0x30006100, b"\x4b\x20\x70\x47")          # a reverb cell (fresh address: Unicorn caches code)
 e.w32(VT2, 0x30006101)
 rids = [0x198, 0x37, 0x3B, 0x3A, 0x1D7, 0x1D8, 0x1D9, 0x1DA]
@@ -159,6 +163,17 @@ check("other FX cells' pages untouched", len(page(1)) == len(ids))
 store(type=0, fb=400, wand=250, random=0, freeze=0)
 block([(0.0, 0.0)] * N)
 check("Type Delay: the stock delay runs, its lines untouched", calls == ["stock"], calls)
+
+if not ENGINE:
+    store(type=1, random=0)
+    block([(0.0, 0.0)] * N)
+    check("engine left out: the second Type (Motion) still runs the stock delay, its lines untouched", calls == ["stock"], calls)
+    store(type=0)
+    block([(0.0, 0.0)] * N)
+    check("  and going back to Delay clears nothing", calls == ["stock"], calls)
+    print("     Munchi's engine is not in this build (MUNCHI_OFF): its own tests are skipped. MUNCHI=1 ./build.sh puts it back.")
+    print(f"\n{fails} failure(s)")
+    sys.exit(1 if fails else 0)
 
 # --- Munchi: an impulse comes back after the note length
 store(type=1, random=0)
@@ -273,7 +288,15 @@ check("Type knob turned (0x32 on slot 0): the page rebuilds (0x66 follows)", scr
 check("another knob turned: no rebuild", screen_msg(0x32, 1) == [0x32])
 check("other messages pass through alone", screen_msg(0xD4, 0) == [0xD4])
 e.uc.mem_write(view + 0xD4, struct.pack("<H", 0x198))
+GUI = 0x3000C000
+e.w32(0x24002E6C, GUI)
+e.uc.mem_write(GUI + 0x280 + 0x38, b"\0\0")
+screen_msg(0x32, 1)
+check("another knob: no full redraw asked", bytes(e.uc.mem_read(GUI + 0x280 + 0x38, 2)) == b"\0\0")
 check("reverb Type knob: rebuild too", screen_msg(0x32, 0) == [0x32, 0x66])
+check("Type change asks the GUI for a full clear + redraw (no stale knobs from the other type)", bytes(e.uc.mem_read(GUI + 0x280 + 0x38, 2)) == b"\x01\x01")
+e.w32(0x24002E6C, 0)
+check("no GUI pointer yet: still rebuilds, no write", screen_msg(0x32, 0) == [0x32, 0x66])
 
 # --- integrity
 e.uc.mem_write(STATE, bytes(64))

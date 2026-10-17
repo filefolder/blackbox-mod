@@ -39,7 +39,7 @@ typedef void (*player_fn)(uint8_t *seq, const void *clock, int32_t a, int32_t b,
 #define EVENT_START   0x04
 #define EVENT_ID      0x0c
 #define GRACE         240        /* ticks (960 per 16th = a 64th): a note placed this close behind the playhead
-                                    still plays, a hair late; his report: notes "close" ahead did not sound */
+                                    still plays, a hair late; the report: notes "close" ahead did not sound */
 
 void bkp_enable(void);
 

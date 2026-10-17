@@ -16,4 +16,9 @@ PATCHES = [
     # mixer view vtable: touch down / touch move
     (0x080F0F20, word(0x080B5F45), word(sym["solo_touch_down"] | 1)),
     (0x080F0F24, word(0x080B5EBD), word(sym["solo_touch_move"] | 1)),
+    # Pads screen: a third position on the lower-right knob (Velocity slider / clipboard / MUTE + SOLO)
+    (0x080B4704, bytes.fromhex("0221"), bytes.fromhex("0321")),                       # column stepper: 2 -> 3 positions
+    (0x080B43A4, bytes.fromhex("42f65435" "3544"), bl(0x080B43A4, sym["pads_panels_thunk"]) + bytes.fromhex("1de7")),
+    (0x080F0E80, word(0x080B3E85), word(sym["pads_child_msg"] | 1)),                  # Pads view vtable +0x30
+    (0x080F0E84, word(0x080B4135), word(sym["pads_msg"] | 1)),                        # Pads view vtable +0x34
 ]

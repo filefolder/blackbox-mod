@@ -12,7 +12,7 @@ from unicorn.arm_const import UC_ARM_REG_S0
 
 from emu import Emu
 
-e = Emu("out/solo+slice+duck+chord+cond+filter+cpu+od+comp+seqfix+fx2+munchi+cave/BLACKBOX.bin", "out/cave.elf")
+e = Emu("out/solo+slice+duck+chord+cond+filter+cpu+od+comp+seqfix+fx2+munchi+master+cave/BLACKBOX.bin", "out/cave.elf")
 e.uc.mem_map(0x38800000, 0x1000)               # backup SRAM
 e.uc.mem_map(0x58024000, 0x1000)               # RCC + PWR
 OBJ, L, R = 0x24060000, 0x24061000, 0x24063000
@@ -182,5 +182,25 @@ check("machine mode: the warm saturation stands aside (make-up gain only, like O
 fidelity(0)
 y = run_a(x)
 check("Normal: the saturation runs as before", max(abs(a * 0.9 - b) for a, b in zip(x, y)) > 0.01)
+
+# --- 3.1.U: clip / slicer pads too: their overdrive object is the pad + 0xb8c (FUN_08067fa4)
+OBJ_B = PAD + 0xB8C
+
+
+def run_b(left):
+    e.uc.mem_write(L, struct.pack(f"<{len(left)}f", *left))
+    e.call("od_process_b", OBJ_B, L, 0, len(left))
+    return list(struct.unpack(f"<{len(left)}f", e.uc.mem_read(L, 4 * len(left))))
+
+
+setup(0.8, makeup=0.9, obj=OBJ_B)
+for v, name in ((2, "SP1200"), (4, "S950"), (7, "S950 Lo")):
+    fidelity(v)
+    y = run_b(x)
+    check(f"clip / slicer pad on {name}: the warm saturation stands aside", all(abs(a * 0.9 - b) < 1e-6 for a, b in zip(x, y)))
+for v, name in ((0, "Normal"), (9, "12k")):
+    fidelity(v)
+    y = run_b(x)
+    check(f"clip / slicer pad on {name}: the saturation runs as before", max(abs(a * 0.9 - b) for a, b in zip(x, y)) > 0.01)
 print(f"\n{fails} failure(s)")
 sys.exit(1 if fails else 0)

@@ -5,7 +5,7 @@
  * when the Filter knob is left of centre and high-pass when right of it, bypassed at centre. This replaces that
  * call (both pad classes) with:
  *   1. Crunch: the pad's Interp list gains seven entries after Normal / HighQ (16k down to 2k:
- *      on his hardware 26k / 20k were inaudible on bright material and 12k was where it started to bite). Each holds the
+ *      on the test unit 26k / 20k were inaudible on bright material and 12k was where it started to bite). Each holds the
  *      voice's output at a lower sample rate (zero-order hold, no anti-aliasing: the old-sampler sound) and rounds
  *      it to 12 bits, before the filter, so the filter can tame the grit.
  *   2. Filter: 24 dB/oct, two of the trapezoidal state-variable filters from Emilie Gillet's stmlib (dsp/filter.h,
@@ -53,10 +53,14 @@ static const float crunch_rate[] = {16000.0f, 12000.0f, 10000.0f, 8000.0f, 6000.
  *           so pitching skips or doubles stored samples like the SP's carry-adder pitch logic, and the aliasing moves
  *           with the note. (A fixed-rate hold alone, the 16k..2k crunch, cannot do that.)
  *   hold    1: the DAC runs at the grid rate whatever the pitch (SP-1200, SP-12, MPC60): zero-order hold at grid
- *           after the voice. 0: a per-voice variable-rate DAC (S950): no fixed hold; the reader interpolates linearly
- *           between grid samples, standing in for its rate-tracking smoothing filter.
+ *           after the voice.
+ *   clocked 1: the S950, whose DAC clock IS the pitch (3.1.T, from its schematic and OS: src/s950.c). The reader
+ *           clocks the stored samples out one by one with no interpolation, and the output stage is its 36 dB/oct
+ *           low-pass, which follows the voice's clock (0.4 x) and tops out at 16 kHz. "S950" is the machine at its
+ *           widest Audio bandwidth (19.2 kHz, 48 kHz samples), "S950 Lo" at 12.5 kHz (31.25 kHz samples): the
+ *           lowest whose input filter the reader's five taps can still follow (host/check_s950.py).
  *   out     output stage, an RBJ low-pass {b0, b1, a1, a2} at 48 kHz (b2 = b0): SP-1200 12 kHz Q 1.25, SP-12
- *           12.5 kHz Q 1.2 (resonant: the steep-filter ring), S950 13.5 kHz Q 0.75, MPC60 16 kHz Q 0.9.
+ *           12.5 kHz Q 1.2 (resonant: the steep-filter ring), MPC60 16 kHz Q 0.9.
  *   SP Raw  (3.1.n) SP1200 without the output filter, like the SP's unfiltered outputs 7-8: the hold's images and the
  *           pitched-down sizzle come straight through.
  * All 12-bit. The SP's SSM2044 outputs are the pad's own Filter knob (24 dB SVF with drive) after this.
@@ -67,35 +71,56 @@ static const float crunch_rate[] = {16000.0f, 12000.0f, 10000.0f, 8000.0f, 6000.
  */
 struct machine {
     float grid;
-    uint8_t hold, linear, raw;
+    uint8_t hold, clocked, raw;
     float fir[5];
     float out[4];
+    float dac;                   /* the DAC's rate when it is not the grid (SP 45); 0 = the grid */
 };
 static const struct machine machines[] = {
-    {26040.0f, 1, 0, 0, {0.00302f, 0.24563f, 0.5027f, 0.24563f, 0.00302f}, {0.357143f, 0.714286f, 0.0f, 0.428571f}},
-    {27500.0f, 1, 0, 0, {-0.00396f, 0.24215f, 0.52363f, 0.24215f, -0.00396f}, {0.376262f, 0.752523f, 0.092392f, 0.412654f}},
-    {31250.0f, 0, 1, 0, {-0.02035f, 0.2289f, 0.58291f, 0.2289f, -0.02035f}, {0.361304f, 0.722608f, 0.235922f, 0.209295f}},
-    {40000.0f, 1, 0, 0, {-0.03947f, 0.16746f, 0.74402f, 0.16746f, -0.03947f}, {0.506372f, 1.012744f, 0.675162f, 0.350325f}},
-    {26040.0f, 1, 0, 1, {0.00302f, 0.24563f, 0.5027f, 0.24563f, 0.00302f}, {0.0f, 0.0f, 0.0f, 0.0f}},     /* SP Raw */
+    {26040.0f, 1, 0, 0, {0.00302f, 0.24563f, 0.5027f, 0.24563f, 0.00302f}, {0.357143f, 0.714286f, 0.0f, 0.428571f}, 0.0f},
+    {27500.0f, 1, 0, 0, {-0.00396f, 0.24215f, 0.52363f, 0.24215f, -0.00396f}, {0.376262f, 0.752523f, 0.092392f, 0.412654f}, 0.0f},
+    {48000.0f, 0, 1, 0, {-0.07796f, 0.18391f, 0.7881f, 0.18391f, -0.07796f}, {0.0f, 0.0f, 0.0f, 0.0f}, 0.0f},      /* S950 */
+    {40000.0f, 1, 0, 0, {-0.03947f, 0.16746f, 0.74402f, 0.16746f, -0.03947f}, {0.506372f, 1.012744f, 0.675162f, 0.350325f}, 0.0f},
+    {26040.0f, 1, 0, 1, {0.00302f, 0.24563f, 0.5027f, 0.24563f, 0.00302f}, {0.0f, 0.0f, 0.0f, 0.0f}, 0.0f},     /* SP Raw */
+    {31250.0f, 0, 1, 0, {-0.06897f, 0.27256f, 0.59283f, 0.27256f, -0.06897f}, {0.0f, 0.0f, 0.0f, 0.0f}, 0.0f},  /* S950 Lo */
+    /* SP 45 (3.1.X): the record sampled into an SP-1200 at 45 rpm and tuned back down to 33 1/3, per pad and
+       without a new file. Sped up by 1.35 the sample is stored at 26.04 / 1.35 = 19.29 kHz of its own time (the
+       reader's grid, with a five-tap input filter near 9 kHz); the machine then plays it 1.35 slower through its
+       26.04 kHz converter (the hold) and its output filter, as on SP1200.
+       3.2.b: moved here, beside the other machines (by request). A pad saved on one of the plain crunches 16k..2k
+       before 3.2.b comes back one place down the list. */
+    {26040.0f / 1.35f, 1, 0, 0, {0.05302f, 0.25399f, 0.38598f, 0.25399f, 0.05302f}, {0.357143f, 0.714286f, 0.0f, 0.428571f},
+     26040.0f},
 };
 #define MACHINES ((int)(sizeof machines / sizeof machines[0]))
-#define FIRST_MACHINE STOCK_INTERP                      /* his order (3.1.n): machines before the plain crunches */
-#define FIRST_CRUNCH  (STOCK_INTERP + MACHINES)
+#define FIRST_MACHINE STOCK_INTERP                      /* the order asked for (3.1.n): machines before the plain crunches */
+#define FIRST_CRUNCH  (FIRST_MACHINE + MACHINES)
+#define INTERPS       (FIRST_CRUNCH + CRUNCHES)
 
-const char *const interp_names[STOCK_INTERP + CRUNCHES + MACHINES] = {
+static const struct machine *machine_for(unsigned interp)
+{
+    return interp >= FIRST_MACHINE && interp < FIRST_CRUNCH ? &machines[interp - FIRST_MACHINE] : 0;
+}
+
+/*
+ * S950 Lo (3.1.T) has the list place the S1000 mode had (3.1.u - 3.1.S: an eight-point sinc re-pitch, taken out for
+ * its 2.3 KB), so every saved Fidelity value keeps its meaning except a pad left on S1000, which is now S950 Lo.
+ */
+
+const char *const interp_names[INTERPS] = {
     (const char *)0x080cd770u, (const char *)0x080cd778u,       /* Normal, HighQ */
-    "SP1200", "SP-12", "S950", "MPC60", "SP Raw",
+    "SP1200", "SP-12", "S950", "MPC60", "SP Raw", "S950 Lo", "SP 45",
     "16k", "12k", "10k", "8k", "6k", "4k", "2k",
 };
 
-/* Replaces the Interp list registration call: 2 -> 9 entries, and the label "Interp:" -> "Fidelity:" (his pick of
+/* Replaces the Interp list registration call: 2 -> 16 entries, and the label "Interp:" -> "Fidelity:" (the pick of
    names; the xml name "interpqual" stays, so presets are unaffected). */
 void interp_register(void *table, int param, const char *label, const char *const *names, int count, const char *xml)
 {
     (void)label;
     (void)names;
     (void)count;
-    fw_register_list(table, param, "Fidelity:", interp_names, STOCK_INTERP + CRUNCHES + MACHINES, xml);
+    fw_register_list(table, param, "Fidelity:", interp_names, INTERPS, xml);
 }
 
 struct fstate {                  /* at filter object +4..+0x48; the stock coefficient sets and states used to live here */
@@ -105,7 +130,7 @@ struct fstate {                  /* at filter object +4..+0x48; the stock coeffi
     float phase, held[2];        /* crunch: hold phase and held sample per channel */
     uint32_t on;                 /* filter was running last block */
 };
-#define MAGIC 0x53564632u        /* "SVF2": bumped with the layout */
+#define MAGIC 0x53564633u        /* "SVF3": bumped with the layout */
 #define R_BUTTERWORTH 1.84776f   /* 1 / 0.5412: first stage of a 4-pole Butterworth */
 #define SMOOTH 0.33333f          /* per-block coefficient smoothing, as the stock filter */
 
@@ -123,21 +148,26 @@ static float quantize12(float x)
     return (float)i * (1.0f / 2048.0f);
 }
 
-/* Output stage of a machine mode. State in the filter object at +0x60..+0x73, which only the stock process (replaced)
-   and its coefficient helper FUN_0807612c (called only from it) used. */
+/*
+ * Output stage of a machine mode. State in the filter object at +0x60..+0x73, which only the stock process (replaced)
+ * and its coefficient helper FUN_0807612c (called only from it) used; cleared with the filter's own state.
+ *   rate  the voice's playback rate. Sample pads: written by voice_read_a (filter_thunk.S) on every read; the filter
+ *         object is the voice + 0xa8 and the read comes first in the same function (FUN_08056fd0). Clip / slicer
+ *         pads: written by clip_read; the filter object is that voice's object + 0x14c (clip_read_b).
+ *   z     the SP / MPC60 low-pass; in an S950 mode z[0][0] holds the voice's slot in the S950 bank instead (a small
+ *         integer: read back as a float it is as good as zero).
+ */
 struct ostate {
-    uint32_t magic;
-    float z[2][2];
+    float rate;
+    union {
+        float z[2][2];
+        uint32_t slot;
+    };
 };
-#define OMAGIC 0x4d4f5554u       /* "MOUT" */
 
 static void out_stage(uint8_t *obj, float **ch, int n, const float *c)
 {
     struct ostate *o = (struct ostate *)(obj + 0x60);
-    if (o->magic != OMAGIC) {
-        o->z[0][0] = o->z[0][1] = o->z[1][0] = o->z[1][1] = 0.0f;
-        o->magic = OMAGIC;
-    }
     float b0 = c[0], b1 = c[1], a1 = c[2], a2 = c[3];
     for (int k = 0; k < 2; k++) {
         float *x = ch[k];
@@ -153,6 +183,57 @@ static void out_stage(uint8_t *obj, float **ch, int n, const float *c)
         o->z[k][0] = z1;
         o->z[k][1] = z2;
     }
+}
+
+/*
+ * The S950's low-pass needs six values per channel, more than the filter object has spare: they live in SDRAM, in the
+ * block master.c takes at boot (behind Prism's, the LFOs' and the USB ring), a slot per filter object that ever ran
+ * an S950 mode. No block or no slot left = that voice goes without the low-pass.
+ */
+void s950_read(float grid, const float *fir, int32_t base, float sgn, float gain, float post, float rate,
+               const float *src, int n_src, int pos, int *newpos, float *frac, float *dst, int n);
+unsigned s950_filter_count(float clock, unsigned index);
+void s950_filter(float *z, float **ch, int n, unsigned count);
+uint8_t *master_block(void);
+
+#define S9_OFFSET (0x56800u + 0x7000u)
+#define S9_SLOTS  256
+#define S9_MAGIC  0x53393530u    /* "S950" */
+struct s9_slot {
+    const uint8_t *obj;
+    float z[12];
+};
+struct s9_bank {
+    uint32_t magic, used;
+    struct s9_slot slot[S9_SLOTS];
+};
+_Static_assert(sizeof(struct s9_bank) <= 0x4000, "master.c's EXTRA_BYTES gives the bank 0x4000");
+
+static float *s950_state(const uint8_t *obj, struct ostate *o)
+{
+    uint8_t *mem = master_block();
+    if (!mem)
+        return 0;
+    struct s9_bank *b = (struct s9_bank *)(mem + S9_OFFSET);
+    if (b->magic != S9_MAGIC) {
+        b->used = 0;
+        b->magic = S9_MAGIC;
+    }
+    uint32_t i = o->slot;
+    if (i < b->used && b->slot[i].obj == obj)
+        return b->slot[i].z;
+    for (i = 0; i < b->used && b->slot[i].obj != obj; i++)   /* back from another mode, which used z as its own */
+        ;
+    if (i == b->used) {
+        if (i >= S9_SLOTS)
+            return 0;
+        b->slot[i].obj = obj;
+        b->used = i + 1;
+    }
+    for (int k = 0; k < 12; k++)
+        b->slot[i].z[k] = 0.0f;
+    o->slot = i;
+    return b->slot[i].z;
 }
 
 static void crunch(struct fstate *st, float **ch, int n, float rate)
@@ -253,8 +334,7 @@ static unsigned pad_interp(const uint8_t *pad)
 /* For od.c: this pad is in a machine mode, so its Saturation knob is the machine's input drive (applied here). */
 int pad_machine_mode(const uint8_t *pad)
 {
-    unsigned interp = pad_interp(pad);
-    return interp >= FIRST_MACHINE && interp < FIRST_MACHINE + MACHINES;
+    return machine_for(pad_interp(pad)) != 0;
 }
 
 /* Saturation into the converter: gain, hard clip at full scale, level back */
@@ -282,14 +362,16 @@ void filter_process(uint8_t *obj, void *buf, const uint8_t *pad)
     if (fw_buf_silent(buf))
         return;
     struct fstate *st = (struct fstate *)(obj + 4);
+    struct ostate *o = (struct ostate *)(obj + 0x60);
     if (st->magic != MAGIC) {
         uint32_t *w = (uint32_t *)st;
         for (unsigned i = 0; i < sizeof *st / 4; i++)
             w[i] = 0;
+        o->z[0][0] = o->z[0][1] = o->z[1][0] = o->z[1][1] = 0.0f;
         st->magic = MAGIC;
     }
     unsigned interp = pad_interp(pad);
-    int crunching = interp >= STOCK_INTERP && interp < STOCK_INTERP + CRUNCHES + MACHINES;
+    int crunching = interp >= FIRST_MACHINE && interp < INTERPS;
     uint8_t *params = *(uint8_t **)(obj + OBJ_PARAMS);
     float knob = params ? fw_param(params + 8) : 0.0f;
     if (knob == 0.0f) {
@@ -303,21 +385,33 @@ void filter_process(uint8_t *obj, void *buf, const uint8_t *pad)
     fw_buf_chans(buf, &ch[0], &ch[1]);
     if (!ch[0] || n <= 0)
         return;
-    if (interp >= FIRST_MACHINE && interp < FIRST_MACHINE + MACHINES) {
-        const struct machine *m = &machines[interp - FIRST_MACHINE];
+    const struct machine *m = machine_for(interp);
+    if (m) {
         float d = (float)pad_setting(pad, 0xdb) * 0.001f;
-        if (d > 0.0f)
-            adc_drive(ch, n, d > 1.0f ? 1.0f : d);
-        if (m->hold) {
-            crunch(st, ch, n, m->grid);
-        } else {
-            for (int k = 0; k < 2; k++)
-                if (ch[k])
-                    for (int i = 0; i < n; i++)
-                        ch[k][i] = quantize12(ch[k][i]);
+        /* S950: the reader already drove, rounded and clocked out the stored samples (s950_read) and left its rate.
+           A rate that makes no sense = no reader ran for this object: do the 12 bits here, as 3.1.T did for clips. */
+        float rate = o->rate < 0.0f ? -o->rate : o->rate;
+        int read = m->clocked && rate > 0.01f && rate < 64.0f;
+        if (!read) {
+            rate = 1.0f;
+            if (d > 0.0f)
+                adc_drive(ch, n, d > 1.0f ? 1.0f : d);
+            if (m->hold || m->grid < FS) {
+                crunch(st, ch, n, m->dac > 0.0f ? m->dac : m->grid);
+            } else {
+                for (int k = 0; k < 2; k++)
+                    if (ch[k])
+                        for (int i = 0; i < n; i++)
+                            ch[k][i] = quantize12(ch[k][i]);
+            }
         }
-        if (!m->raw)
+        if (m->clocked) {
+            float *z = s950_state(obj, o);
+            if (z)
+                s950_filter(z, ch, n, s950_filter_count(m->grid * rate, 168));
+        } else if (!m->raw) {
             out_stage(obj, ch, n, m->out);
+        }
     } else if (crunching) {
         crunch(st, ch, n, crunch_rate[interp - FIRST_CRUNCH]);
     }
@@ -405,6 +499,13 @@ static void machine_read(const struct machine *m, float rate, const float *src, 
         sgn = -1.0f;
         base = PARK->pos + 3;            /* FUN_08055f0c rounds a float that already holds an integer */
     }
+    if (m->clocked) {
+        float d = (float)pad_setting(PARK->pad, 0xdb) * 0.001f;
+        d = d > 1.0f ? 1.0f : d;
+        s950_read(m->grid, m->fir, base, sgn, 1.0f + 7.0f * d * d, 1.0f / (1.0f + 1.1f * d * d), rate, src, n_src, pos,
+                  newpos, frac, dst, n);
+        return;
+    }
     /* Keep the per-frame maths small: a float holds a sample position 2.9 M samples (60 s) in to only 0.25 of a
        sample. Anchor once per call in double (the M7 FPU has it), then work relative to the grid point below. */
     double gd = 48000.0 / (double)m->grid;
@@ -418,19 +519,13 @@ static void machine_read(const struct machine *m, float rate, const float *src, 
     float f = *frac;
     int idx = pos;
     for (int i = 0; i < n; i++) {
-        float gp = (a0 + sgn * ((float)idx + f)) * inv_g, k0 = floor_f(gp);
+        /* + 1/8192 of a grid step: a reading point exactly on a grid line (a clip at its original pitch on the 40 kHz
+           grid is, every sixth frame) would otherwise fall to either side by rounding */
+        float gp = (a0 + sgn * ((float)idx + f)) * inv_g + (1.0f / 8192.0f), k0 = floor_f(gp);
         int j0 = round_i(sgn * (k0 * g - a0));
         j0 = j0 < 2 ? 2 : j0 > hi ? hi : j0;
         const float *s = src + j0;
-        float v = h[0] * s[-2] + h[1] * s[-1] + h[2] * s[0] + h[3] * s[1] + h[4] * s[2];
-        if (m->linear) {
-            int j1 = round_i(sgn * ((k0 + 1.0f) * g - a0));
-            j1 = j1 < 2 ? 2 : j1 > hi ? hi : j1;
-            s = src + j1;
-            float w = h[0] * s[-2] + h[1] * s[-1] + h[2] * s[0] + h[3] * s[1] + h[4] * s[2];
-            v += (gp - k0) * (w - v);
-        }
-        dst[i] = v;
+        dst[i] = h[0] * s[-2] + h[1] * s[-1] + h[2] * s[0] + h[3] * s[1] + h[4] * s[2];
         float adv = rate + f;
         int step = (int)adv;
         idx += step;
@@ -446,8 +541,7 @@ typedef int (*voice_read_fn)(float frac, float rate, const uint8_t *pad, void *s
 
 static const struct machine *pad_machine(const uint8_t *pad)
 {
-    unsigned interp = pad_interp(pad);
-    return interp >= FIRST_MACHINE && interp < FIRST_MACHINE + MACHINES ? &machines[interp - FIRST_MACHINE] : 0;
+    return machine_for(pad_interp(pad));
 }
 
 /*
@@ -491,4 +585,77 @@ void read_hq(float rate, const float *src, int n_src, int pos, int *newpos, floa
         machine_read(m, rate, src, n_src, pos, newpos, frac, dst, n);
     else
         fw_kernel_hq(rate, src, n_src, pos, newpos, frac, dst, n);
+}
+
+/*
+ * Clip and slicer pads (engine class B) do not read through FUN_08055f0c. Each of their voices' segments reads through
+ * FUN_080662e4 (one call, @0x08066622, in FUN_08066454): it fetches int(n x rate) + 8 source samples from the
+ * segment's position into a scratch buffer and runs a four-point kernel over them (FUN_080603ec, the reading point
+ * one sample past the position), or copies the source straight across at exactly the original pitch. This replaces
+ * that call. Fidelity Normal / HighQ / the plain crunches: stock, untouched. A machine mode: the same fetch three
+ * samples earlier (the machine kernels look two samples either side of a stored sample, which can sit a grid step
+ * behind the reading point), then machine_read: the readers the sample pads use, anchored on the absolute position.
+ * The count of source samples used and the fraction go back exactly as stock's would (same arithmetic), so loop
+ * points, slices and tempo sync are where they were.
+ */
+typedef int (*clip_read_fn)(float rate, uint8_t *pad, uint8_t *filter, int32_t pos, int32_t pos_hi, int n, int *used,
+                            float *frac, void *scratch, void *out, void **result);
+typedef int (*src_int_fn)(void *src);
+typedef void (*fetch_fn)(void *src, float *dst, int n, int32_t pos, int zero);
+typedef void (*fetch2_fn)(void *src, float *left, float *right, int n, int32_t pos);
+typedef float *(*buf_mono_fn)(void *buf);
+#define fw_clip_read  ((clip_read_fn)FN(0x080662e4))
+#define fw_src_len    ((src_int_fn)FN(0x080636f0))
+#define fw_src_stereo ((src_int_fn)FN(0x08063790))
+#define fw_fetch      ((fetch_fn)FN(0x08063634))
+#define fw_fetch2     ((fetch2_fn)FN(0x08063608))
+#define fw_buf_mono   ((buf_mono_fn)FN(0x0804d934))
+#define fw_buf_pair   ((buf_chans_fn)FN(0x0804da0c))
+#define CLIP_SOURCE 0x24         /* pad -> its sample */
+#define CLIP_BACK   3            /* the fetch starts this many samples before the position */
+
+/* filter = the reading voice's filter object, put in the register stock leaves unused (clip_read_b, filter_thunk.S) */
+int clip_read(float rate, uint8_t *pad, uint8_t *filter, int32_t pos, int32_t pos_hi, int n, int *used, float *frac,
+              void *scratch, void *out, void **result)
+{
+    const struct machine *m = pad_machine(pad);
+    if (!m || !(rate > 0.0f))
+        return fw_clip_read(rate, pad, filter, pos, pos_hi, n, used, frac, scratch, out, result);
+    void *src = *(void **)(pad + CLIP_SOURCE);
+    if (fw_src_len(src) + 0xff < pos)
+        return 0;
+    ((struct ostate *)(filter + 0x60))->rate = rate;
+    int n_src = (int)((float)n * rate) + 8, cap = fw_buf_frames(scratch);
+    if (n_src > cap)
+        n_src = cap;
+    int32_t start = pos - CLIP_BACK;
+    int lead = start < 0 ? -start : 0;                      /* before the sample's first frame: silence */
+    if (lead > n_src)
+        lead = n_src;
+    PARK->pad = pad;
+    PARK->pos = start + 4;                                  /* machine_read: scratch[0] = source[PARK->pos - 4] */
+    PARK->rate = rate;
+    int idx = 4;
+    if (!fw_src_stereo(src)) {
+        float *s = fw_buf_mono(scratch);
+        for (int i = 0; i < lead; i++)
+            s[i] = 0.0f;
+        if (n_src > lead)
+            fw_fetch(src, s + lead, n_src - lead, start + lead, 0);
+        machine_read(m, rate, s, n_src, 4, &idx, frac, fw_buf_mono(out), n);
+    } else {
+        float *sl = 0, *sr = 0, *ol = 0, *orr = 0;
+        fw_buf_pair(scratch, &sl, &sr);
+        for (int i = 0; i < lead; i++)
+            sl[i] = sr[i] = 0.0f;
+        if (n_src > lead)
+            fw_fetch2(src, sl + lead, sr + lead, n_src - lead, start + lead);
+        fw_buf_pair(out, &ol, &orr);
+        float f = *frac;
+        machine_read(m, rate, sl, n_src, 4, &idx, &f, ol, n);
+        machine_read(m, rate, sr, n_src, 4, &idx, frac, orr, n);
+    }
+    *used = idx - 4;
+    *result = out;
+    return 1;
 }
