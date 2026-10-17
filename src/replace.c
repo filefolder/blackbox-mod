@@ -123,7 +123,7 @@ int stepmode_snap_get(uint8_t *obj, void *pad, int param, int *out)
     return ok;
 }
 
-#define IDS 44
+#define IDS 32
 struct rpl_state {
     uint32_t magic;
     uint32_t key;                /* pad code | layer << 24 */
@@ -131,10 +131,14 @@ struct rpl_state {
     int64_t loop;                /* its length */
     uint8_t ncur, nprev, _r[2];
     uint32_t cur[IDS];           /* ids recorded on this pass (ring) */
-    uint32_t prev[IDS];          /* ... and on the pass before */
 };
-#define RS ((volatile struct rpl_state *)0x38800e80u)   /* backup SRAM, after prknobs.c's 0x38800e40 */
-#define MAGIC 0x52504c31u        /* "RPL1" */
+/* backup SRAM, in two of its gaps (0x38800b20 on is upstream's VHS delay line): the state after fx2.c's
+   (0x38800a00..0x38800a5c), the ids of the pass before after seqfix.c's (0x38800700..0x38800908) */
+#define RS ((volatile struct rpl_state *)0x38800a60u)
+#define PREV ((volatile uint32_t *)0x38800908u)
+_Static_assert(sizeof(struct rpl_state) <= 0xb00 - 0xa60, "replace state runs into fx2.c's parked pointer");
+_Static_assert(IDS * 4 <= 0x990 - 0x908, "the previous pass's ids run into upstream's Motion state at 0x38800990");
+#define MAGIC 0x52504c32u        /* "RPL2": bumped with the layout */
 
 static inline uint32_t rd32(const uint8_t *p) { return *(const volatile uint32_t *)p; }
 
@@ -221,7 +225,7 @@ static void enter_pass(struct ctx *c, int64_t pass, int64_t loop)
         return;
     int n = RS->ncur < IDS ? RS->ncur : IDS;
     for (int i = 0; i < n; i++)
-        RS->prev[i] = RS->cur[i];
+        PREV[i] = RS->cur[i];
     RS->nprev = (uint8_t)(RS->pass + loop == pass ? n : 0);   /* not the pass right before: nothing to keep */
     RS->ncur = 0;
     RS->pass = pass;
@@ -235,7 +239,7 @@ static void clear_range(struct ctx *c, uint32_t from, uint32_t to, uint32_t keep
     for (int i = 0; fw_list_get(c->list, i, ev);) {
         uint32_t id = rd32(ev + EV_ID), start = rd32(ev + EV_START);
         if (ev[EV_TYPE] == EV_NOTE && start >= from && start < to && id != keep &&
-            !in_set(RS->cur, RS->ncur, id) && !(with_prev && in_set(RS->prev, RS->nprev, id))) {
+            !in_set(RS->cur, RS->ncur, id) && !(with_prev && in_set(PREV, RS->nprev, id))) {
             fw_list_del(c->list, id);
             fw_engine_del(ENGINE, c->pad, id, c->layer);
             continue;            /* the next note moved into slot i */

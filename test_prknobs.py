@@ -115,7 +115,7 @@ def setup(boxed=(), cur=0, fresh=True):
         e.w32(V + 0xAEA8 + 4 * i, nid)
     e.w32(V + 0xB2A8, len(boxed))
     if fresh:
-        e.uc.mem_write(0x38800E40, bytes(0x40))   # no state yet
+        e.uc.mem_write(0x38800388, bytes(0x38))   # no state yet
     e.w32(V + 0x2C, PARENT)
     e.uc.mem_write(V + 0xA04C, struct.pack("<H", 0x21))
     calls.clear()

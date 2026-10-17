@@ -72,7 +72,9 @@ struct prk_state {
     uint8_t none;
     int32_t knob[3];             /* bottom-left, top-right, bottom-right: counts toward the next step */
 };
-#define PS ((volatile struct prk_state *)0x38800e40u)   /* backup SRAM, after usbrecover's 0x38800e00 */
+/* backup SRAM: after od.c's filter states (0x38800000..0x38800384); usbrecover.c is at 0x388003c0 */
+#define PS ((volatile struct prk_state *)0x38800388u)
+_Static_assert(sizeof(struct prk_state) <= 0x3c0 - 0x388, "piano roll knob state runs into usbrecover.c's");
 #define MAGIC 0x50524b32u        /* "PRK2" */
 
 static void ensure(uint8_t *v)
