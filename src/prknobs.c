@@ -14,8 +14,8 @@
  *    last note goes back to nothing selected. Otherwise stock.
  *  - Bottom-left (time), top-right (length), bottom-right (pitch): with a box selection they act on the boxed notes;
  *    with nothing selected and no box, on every note; with a current note picked by the top-left knob, on it (stock).
- *    Acting on a set posts the same per-note edit the stock knob handlers post for the current note (message 0x16f
- *    to the app, plus the view's own 0x42 / 0x43 redraw), one per note, by whole steps of the knob.
+ *    Acting on a set changes the notes in the app's list in one pass, sends each changed note to the engine and
+ *    refreshes the views once (see shift), by whole steps of the knob.
  *    Time wraps around the pattern; pitch moves the set together and stops it at the knob's range (chord shapes
  *    are kept); length is clamped per note.
  *  - The bottom-right knob works in every sequence mode (the +0xf5e0 skip is patched out).
@@ -164,120 +164,164 @@ void prk_select(uint8_t *v, int delta)
     fw_select(v, delta);
 }
 
-struct edit_msg {
+/*
+ * Moving a set of notes, all in one go, the way upstream's rotate (JOEBOX 1, rotate.c) does it: the app keeps each
+ * layer's notes in a pool with a handle array sorted by start, and the engine has its own copy, updated one note at a
+ * time by id. The notes are changed in place in the app's pool, the handles re-sorted if starts moved, each changed
+ * note is sent to the engine the way the stock edit handler sends one, and the views get ONE refresh (message 0x66),
+ * which reloads the piano roll. (Until this, every note was a separate stock edit, and each one reloaded the piano
+ * roll: a step of the knob on a busy pattern took a reload per note.)
+ */
+struct event {                   /* 0x18 bytes */
+    uint8_t type, cond;
+    uint16_t _r0;
+    uint32_t start, length, id;
+    uint16_t pitch, velocity;
+    uint32_t _r1;
+};
+struct list {
+    uint16_t *handles;           /* sorted by start; the low 14 bits index the pool */
+    uint32_t count, index, _r;
+    struct event **pool;
+};
+struct ref {
+    uint32_t tag;
+    uint16_t id, _r;
+};
+struct msg {
     uint16_t id, _r0;
     uint32_t tag;
-    uint16_t pad, _r1;
-    int32_t event, field, value;
+    uint16_t seq, _r1;
+    int32_t a, b, c;
 };
-typedef void (*post_fn)(uint8_t *obj, void *msg);
-#define fw_post   ((post_fn)FN(0x080aed14))   /* hand a message to obj's parent */
-#define MSG_TAG   0x080cfba4u
-#define V_PARENT  0x2c                          /* -> the piano roll's parent; its parent is the app */
-#define V_PADCODE 0xa04c
+typedef int (*param_get_fn)(uint8_t *app, const void *ref, unsigned param, uint32_t *out);
+typedef uint8_t *(*cell_fn)(uint8_t *app, const void *ref, unsigned layer);
+typedef uint32_t (*cell_param_fn)(uint8_t *cell, unsigned param);
+typedef void (*engine_event_fn)(uint8_t *engine, uint32_t seq, const struct event *event, uint32_t zero,
+                                unsigned layer);
+typedef void (*app_post_fn)(uint8_t *queue, const struct msg *m);
+#define fw_param_get    ((param_get_fn)FN(0x08099504))
+#define fw_cell         ((cell_fn)FN(0x08097ce8))
+#define fw_cell_param   ((cell_param_fn)FN(0x08093e9c))
+#define fw_engine_event ((engine_event_fn)FN(0x0804c798))    /* add / update one note in the engine, by id */
+#define fw_app_post     ((app_post_fn)FN(0x080b5758))        /* queue a message for the views */
 
-#define F_PITCH       1
-#define F_START_STEPS 2
-#define F_START_TICKS 3
-#define F_LEN_STEPS   4
-#define F_LEN_TICKS   5
+#define APP        ((uint8_t *)0x24020088u)
+#define ENGINE     ((uint8_t *)0x2400a9c0u)
+#define STEP_TICKS ((const float *)0x080eca6cu)              /* Step Len index -> quarter notes; 960 ticks each */
+#define STEP_LENS  15
+#define VIEW_ROLL  0x38          /* the piano roll inside its view: the view is v - 0x38 */
+#define VIEW_SEQ   0xb490        /* view: the shown sequence (struct ref) */
+#define APP_QUEUE  0x30
+#define APP_DIRTY  0x8cc4
+#define CELL_LIST  0x18
+#define P_STEP_LEN   0x85
+#define P_STEP_COUNT 0x86
+#define P_STEP_MODE  0x88        /* OFF, ON, REPLACE (free time, like OFF), ON+REPL (steps, like ON): replace.c */
+#define P_LAYER      0xc0
+#define MSG_REFRESH  0x66
+#define MSG_TAG      0x080cfba4u
+#define TICKS        960
 
 static int32_t mod(int32_t a, int32_t n) { a %= n; return a < 0 ? a + n : a; }
 
-/* Change one field of one note: the cell (what the view draws), a local redraw message (0x42 / 0x43, as the stock
- * knob handlers send for the current note) and the edit itself to the app. The edit goes to the parent's parent
- * directly: through the parent it would also be copied to every other note of the box selection (FUN_080c0288). */
-static void set_note(uint8_t *v, uint8_t *c, int field, int32_t value)
-{
-    uint16_t pad = *(volatile uint16_t *)(v + V_PADCODE);
-    uint32_t id = (uint32_t)rd32(c + CELL_ID);
-    int fine = rd32(v + V_FINE);
-    switch (field) {
-    case F_PITCH:       wr32(c + CELL_PITCH, value); break;
-    case F_START_STEPS: wr32(c + CELL_START, value); break;
-    case F_START_TICKS: wr32(c + CELL_START_T, value); wr32(c + CELL_START, value / fine); break;
-    case F_LEN_STEPS:   wr32(c + CELL_LEN, value); break;
-    case F_LEN_TICKS:   wr32(c + CELL_LEN_T, value); wr32(c + CELL_LEN, value / fine < 1 ? 1 : value / fine); break;
-    }
-    int start_msg = field == F_START_STEPS || field == F_START_TICKS;
-    struct edit_msg local = {start_msg ? 0x43 : 0x42, 0, MSG_TAG, pad, 0, (int32_t)id,
-                             (int32_t)(uint16_t)(int16_t)rd32(c + CELL_LEN) |
-                                 (int32_t)((uint32_t)rd32(c + (start_msg ? CELL_START : CELL_PITCH)) << 16), 0};
-    fw_post(v, &local);
-    struct edit_msg edit = {0x16f, 0, MSG_TAG, pad, 0, (int32_t)id, field, value};
-    uint8_t *parent = *(uint8_t **)(v + V_PARENT);
-    if (parent)
-        fw_post(parent, &edit);
-}
-
-static int targeted(uint8_t *v, uint8_t *c, int boxed)
-{
-    return !boxed || fw_in_box(v, (uint32_t)rd32(c + CELL_ID));
-}
-
-/* Move every boxed note (boxed) or every note by d steps of knob k. */
+/* Move every boxed note (boxed) or every note of the shown layer by d steps of knob k (1 time, 2 length, 3 pitch). */
 static void shift(uint8_t *v, int d, int k, int boxed)
 {
-    int n = rd32(v + V_NCOUNT), fine = rd32(v + V_FINE);
-    if (fine < 1)
-        fine = 1;
-    uint8_t *cells[BOX_MAX];
-    int m = 0;
-    for (int i = 0; i < n && m < BOX_MAX; i++) {
-        uint8_t *c = note_cell(v, i);
-        if (targeted(v, c, boxed))
-            cells[m++] = c;
-    }
-    if (k == 3) {
-        /* pitch: the whole set stops at the edge, so chords keep their shape */
-        int lo = rd32(v + V_PITCH_OFS), hi = lo + rd32(v + V_PITCH_STEP + 0x10) - 1;
-        if (hi < lo)
-            lo = 0, hi = 127;
-        for (int j = 0; j < m; j++) {
-            int p = rd32(cells[j] + CELL_PITCH);
-            if (p + d > hi)
-                d = hi - p;
-            if (p + d < lo)
-                d = lo - p;
-        }
-        if (d == 0)
-            return;
-        for (int j = 0; j < m; j++)
-            set_note(v, cells[j], F_PITCH, rd32(cells[j] + CELL_PITCH) + d);
-    } else if (k == 1) {
-        /* time: wraps around the pattern. Notes that start at or past the loop end (left over from a longer Step
-           Count) stay where they are, so they are back in place if the pattern is made longer again. */
-        int count = rd32(v + V_START_STEP + 0x10);
-        for (int j = 0; j < m; j++) {
-            if (fine == 1) {
-                int32_t s0 = rd32(cells[j] + CELL_START), s = s0 + d;
-                if (count > 0 && s0 >= count)
-                    continue;
-                set_note(v, cells[j], F_START_STEPS, count > 0 ? mod(s, count) : (s < 0 ? 0 : s));
-            } else {
-                int32_t t0 = rd32(cells[j] + CELL_START_T), t = t0 + d * fine;
-                if (count > 0 && t0 >= count * fine)
-                    continue;
-                set_note(v, cells[j], F_START_TICKS, count > 0 ? mod(t, count * fine) : (t < 0 ? 0 : t));
-            }
-        }
-    } else {
-        /* length: each note from 1 step to the longest the knob allows */
-        int max = rd32(v + V_LEN_STEP + 0x10) - 1;
-        for (int j = 0; j < m; j++) {
-            if (fine == 1) {
-                int32_t l = rd32(cells[j] + CELL_LEN) + d;
-                l = l < 1 ? 1 : (max >= 1 && l > max ? max : l);
-                if (l != rd32(cells[j] + CELL_LEN))
-                    set_note(v, cells[j], F_LEN_STEPS, l);
-            } else {
-                int32_t l = rd32(cells[j] + CELL_LEN_T) + d * fine;
-                l = l < fine ? fine : (max >= 1 && l > max * fine ? max * fine : l);
-                if (l != rd32(cells[j] + CELL_LEN_T))
-                    set_note(v, cells[j], F_LEN_TICKS, l);
-            }
+    const struct ref *shown = (const struct ref *)(v - VIEW_ROLL + VIEW_SEQ);
+    unsigned id = shown->id;
+    if ((id & 0xff) >> 4 > 3 || (id & 0xf) > 4)
+        return;                                              /* not a sequence cell */
+    uint32_t count = 0, len = 0, mode = 0;
+    fw_param_get(APP, shown, P_STEP_COUNT, &count);
+    fw_param_get(APP, shown, P_STEP_LEN, &len);
+    fw_param_get(APP, shown, P_STEP_MODE, &mode);
+    if (count < 1 || count > 0x100 || len >= STEP_LENS)
+        return;
+    int32_t unit = mode && mode != 2 ? TICKS : (int32_t)(STEP_TICKS[len] * (float)TICKS + 0.5f);
+    if (unit < 1)
+        return;
+    int32_t loop = (int32_t)count * unit;
+
+    struct ref ref = {0, (uint16_t)id, 0};
+    unsigned layer = fw_cell_param(fw_cell(APP, &ref, 0), P_LAYER) & 0xff;
+    struct list *l = (struct list *)(fw_cell(APP, &ref, layer) + CELL_LIST);
+    if (!l->handles || !l->pool || !*l->pool)
+        return;
+    struct event *pool = *l->pool;
+    uint16_t *h = l->handles;
+    uint32_t n = l->count;
+
+    /* which notes, and (pitch) how far the set as a whole may go */
+    int lo = rd32(v + V_PITCH_OFS), hi = lo + rd32(v + V_PITCH_STEP + 0x10) - 1;
+    if (hi < lo || lo < 0 || hi > 127)
+        lo = 0, hi = 127;
+    int any = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        struct event *e = &pool[h[i] & 0x3fff];
+        if (e->type != 1 || (boxed && !fw_in_box(v, e->id)))
+            continue;
+        any = 1;
+        if (k == 3) {
+            if ((int)e->pitch + d > hi)
+                d = hi - (int)e->pitch;
+            if ((int)e->pitch + d < lo)
+                d = lo - (int)e->pitch;
         }
     }
+    if (!any || d == 0)
+        return;
+
+    int32_t max_len = rd32(v + V_LEN_STEP + 0x10) - 1;       /* in steps, the longest the length knob goes */
+    if (max_len < 1)
+        max_len = (int32_t)count;
+    uint16_t chg[128];                                       /* pool indices of the changed notes */
+    unsigned nchg = 0, all = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        struct event *e = &pool[h[i] & 0x3fff];
+        if (e->type != 1 || (boxed && !fw_in_box(v, e->id)))
+            continue;
+        if (k == 1) {
+            if ((int32_t)e->start >= loop)
+                continue;                                    /* past the loop end (a shorter Step Count): stays */
+            e->start = (uint32_t)mod((int32_t)e->start + d * unit, loop);
+        } else if (k == 2) {
+            int32_t nl = (int32_t)e->length + d * unit;
+            nl = nl < unit ? unit : nl > max_len * unit ? max_len * unit : nl;
+            if (nl == (int32_t)e->length)
+                continue;
+            e->length = (uint32_t)nl;
+        } else {
+            e->pitch = (uint16_t)((int)e->pitch + d);
+        }
+        if (nchg < sizeof chg / sizeof *chg)
+            chg[nchg++] = h[i] & 0x3fff;
+        else
+            all = 1;                                         /* more than the list holds: send the whole layer */
+    }
+    /* starts moved: the handles must be in start order again (stable, so equal starts keep their order) */
+    if (k == 1)
+        for (uint32_t i = 1; i < n; i++) {
+            uint16_t x = h[i];
+            uint32_t sx = pool[x & 0x3fff].start, j = i;
+            while (j > 0 && pool[h[j - 1] & 0x3fff].start > sx) {
+                h[j] = h[j - 1];
+                j--;
+            }
+            h[j] = x;
+        }
+    uint32_t seq = (id & 0xf) | (id >> 8 & 0x1f) << 16 | (id >> 4 & 0xf) << 8;
+    if (all)
+        for (uint32_t i = 0; i < n; i++)
+            fw_engine_event(ENGINE, seq, &pool[h[i] & 0x3fff], 0, layer);
+    else
+        for (unsigned i = 0; i < nchg; i++)
+            fw_engine_event(ENGINE, seq, &pool[chg[i]], 0, layer);
+    if (!nchg)
+        return;
+    struct msg m = {MSG_REFRESH, 0, MSG_TAG, (uint16_t)id, 0, 0, 0, 0};
+    fw_app_post(APP + APP_QUEUE, &m);
+    APP[APP_DIRTY] = 1;
 }
 
 static const int stepper_of[4] = {0, V_START_STEP, V_LEN_STEP, V_PITCH_STEP};
